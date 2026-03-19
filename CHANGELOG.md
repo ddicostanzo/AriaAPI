@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.1] — DiagnosisAggregator enhancements (PR #1)
+
+### Added
+- **`DiagnosisAggregator.AggregateIcd10CodeList`** — returns structured `List<(string code, string description)>` tuples for ICD-10-CM diagnoses; supports patient filtering and `DistinctBy` on code
+
+### Changed
+- **Refined exception handling in `TryGetOnset`** — replaced bare `catch { }` blocks with specific `catch (FormatException)` / `catch (ArgumentException)` handlers; outer catch uses exception filter (`when (ex is not OutOfMemoryException and not StackOverflowException)`) with `Debug.WriteLine` for diagnostics
+- **`GetClinicalStatusLabel` optimization** — extracted `statusCoding` variable to avoid redundant `FirstOrDefault()` calls
+- **Removed unused `using System.Text;`** directive
+- **Version bumped from `1.0.0-beta.1` to `1.0.1`**
+
+---
+
 ## [2026-03-15] — NuGet GitHub Packages publishing infrastructure (PR #11)
 
 ### Added
