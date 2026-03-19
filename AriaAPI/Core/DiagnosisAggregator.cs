@@ -5,7 +5,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 
 namespace AriaAPI.Core
 {
@@ -59,6 +58,44 @@ namespace AriaAPI.Core
                 lines = lines.Distinct(StringComparer.OrdinalIgnoreCase);
 
             return string.Join(Environment.NewLine, lines);
+        }
+
+        /// <summary>
+        /// Returns a structured list of (code, description) tuples for all ICD-10-CM diagnoses.
+        /// Useful when callers need semicolon-delimited codes and descriptions separately.
+        /// </summary>
+        public static List<(string code, string description)> AggregateIcd10CodeList(
+            IEnumerable<Condition> conditions,
+            string? patientReference = null,
+            bool distinct = true)
+        {
+            if (conditions == null) return [];
+
+            string? normalizedPatientRef = NormalizePatientRef(patientReference);
+
+            IEnumerable<Condition> scoped = conditions;
+            if (!string.IsNullOrWhiteSpace(normalizedPatientRef))
+            {
+                scoped = scoped.Where(c =>
+                    string.Equals(NormalizePatientRef(c.Subject?.Reference), normalizedPatientRef,
+                        StringComparison.OrdinalIgnoreCase));
+            }
+
+            var items = scoped
+                .SelectMany(c => c.Code?.Coding ?? Enumerable.Empty<Coding>())
+                .Where(cd => string.Equals(cd.System, Icd10CmSystem, StringComparison.OrdinalIgnoreCase))
+                .Select(cd =>
+                {
+                    var code = (cd.Code ?? string.Empty).Trim();
+                    var desc = (cd.Display ?? string.Empty).Trim();
+                    return (code, desc);
+                })
+                .Where(x => !string.IsNullOrWhiteSpace(x.code));
+
+            if (distinct)
+                items = items.DistinctBy(x => x.code, StringComparer.OrdinalIgnoreCase);
+
+            return items.ToList();
         }
 
         private static string? NormalizePatientRef(string? patientRef)
@@ -178,7 +215,8 @@ namespace AriaAPI.Core
                         var dto = fdt.ToDateTimeOffset(TimeSpan.Zero);
                         if (dto is DateTimeOffset d) return d;
                     }
-                    catch { /* ignore */ }
+                    catch (FormatException) { }
+                    catch (ArgumentException) { }
 
                     if (!string.IsNullOrWhiteSpace(fdt.Value) &&
                         DateTimeOffset.TryParse(fdt.Value, CultureInfo.InvariantCulture,
@@ -194,7 +232,8 @@ namespace AriaAPI.Core
                             var dto = p.StartElement.ToDateTimeOffset(TimeSpan.Zero);
                             if (dto is DateTimeOffset d) return d;
                         }
-                        catch { }
+                        catch (FormatException) { }
+                        catch (ArgumentException) { }
                     }
                     if (p.EndElement != null)
                     {
@@ -203,11 +242,15 @@ namespace AriaAPI.Core
                             var dto = p.EndElement.ToDateTimeOffset(TimeSpan.Zero);
                             if (dto is DateTimeOffset d) return d;
                         }
-                        catch { }
+                        catch (FormatException) { }
+                        catch (ArgumentException) { }
                     }
                 }
             }
-            catch { /* be forgiving */ }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                System.Diagnostics.Debug.WriteLine($"DiagnosisAggregator: ignoring {ex.GetType().Name} in TryGetOnset: {ex.Message}");
+            }
 
             return null;
         }
@@ -217,10 +260,8 @@ namespace AriaAPI.Core
 
         private static string GetClinicalStatusLabel(Condition c)
         {
-            // Prefer display, then code/text, normalized to Title Case
-            string? raw = c.ClinicalStatus?.Coding?.FirstOrDefault()?.Display
-                       ?? c.ClinicalStatus?.Coding?.FirstOrDefault()?.Code
-                       ?? c.ClinicalStatus?.Text;
+            var statusCoding = c.ClinicalStatus?.Coding?.FirstOrDefault();
+            string? raw = statusCoding?.Display ?? statusCoding?.Code ?? c.ClinicalStatus?.Text;
 
             if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
 

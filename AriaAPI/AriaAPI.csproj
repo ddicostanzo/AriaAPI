@@ -9,7 +9,7 @@
     <Platforms>AnyCPU;x64</Platforms>
 	<GenerateReferenceAssembly>true</GenerateReferenceAssembly>
 	<GenerateDocumentationFile>True</GenerateDocumentationFile>
-    <Version>1.0.0-beta.1</Version>
+    <Version>1.0.1</Version>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
