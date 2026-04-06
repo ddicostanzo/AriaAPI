@@ -18,6 +18,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-04-06] — FanOutSearchHelper comma normalization (PR #3, Issue #2)
+
+### Added
+- **`FanOutParam.PreserveCommas` flag** — optional `bool` (default `false`) on `FanOutSearchHelper.FanOutParam`; when `false`, comma-separated values are split, trimmed, and issued as separate fan-out queries; when `true`, raw comma-joined values pass through unchanged
+- **`NormalizeCommaValues` helper** — splits values on commas, trims whitespace, drops empty segments; applied automatically in `SeparateParams` unless `PreserveCommas` is set
+- **5 new unit tests** in `FanOutSearchHelperTests` — comma splitting, mixed values, whitespace trimming, empty segment handling, and `PreserveCommas` opt-out
+
+### Fixed
+- **HAPI-1953 for non-repeatable parameters** — `FanOutSearchHelper.SeparateParams` now normalizes comma-separated values into individual entries before classifying them, preventing the FHIR server from receiving `service-type=typeA,typeB` which triggers `HAPI-1953: Multiple Values detected for non-repeatable parameter`; all 13+ search classes benefit automatically
+
+### Changed
+- **`PatientSearch` identifier fan-out** — explicitly opts in to `PreserveCommas: true` to preserve intentional comma-joined OR groups for AND-of-OR identifier semantics
+
+---
+
 ## [1.0.1] — DiagnosisAggregator enhancements (PR #1)
 
 ### Added
