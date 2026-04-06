@@ -20,8 +20,19 @@ namespace AriaAPI.Core
         /// <summary>
         /// Describes a single search parameter key and its possible values.
         /// When Values contains more than one entry, each value is issued as a separate query.
+        /// By default, values containing commas are split into individual entries before
+        /// classification. Set <see cref="PreserveCommas"/> to <see langword="true"/> to
+        /// pass comma-separated values through unchanged (e.g., for FHIR OR-group semantics).
         /// </summary>
-        public readonly record struct FanOutParam(string Key, IReadOnlyList<string> Values);
+        /// <param name="Key">The FHIR search parameter key.</param>
+        /// <param name="Values">One or more values for the parameter.</param>
+        /// <param name="PreserveCommas">
+        /// When <see langword="false"/> (default), values containing commas are split into
+        /// individual entries and each is issued as a separate query. When <see langword="true"/>,
+        /// comma-separated values are passed through unchanged — use this when the FHIR server
+        /// supports OR-group semantics and the caller intentionally comma-joins values.
+        /// </param>
+        public readonly record struct FanOutParam(string Key, IReadOnlyList<string> Values, bool PreserveCommas = false);
 
         /// <summary>
         /// Fans out multi-valued parameters into individual FHIR queries using
@@ -246,11 +257,64 @@ namespace AriaAPI.Core
             {
                 if (fp.Values is null || fp.Values.Count == 0)
                     continue;
-                if (fp.Values.Count == 1)
-                    singleValued.Add(fp);
+
+                var values = fp.PreserveCommas
+                    ? fp.Values
+                    : NormalizeCommaValues(fp.Values);
+
+                if (values.Count == 0)
+                    continue;
+                if (values.Count == 1)
+                    singleValued.Add(new FanOutParam(fp.Key, values, fp.PreserveCommas));
                 else
-                    multiValued.Add(fp);
+                    multiValued.Add(new FanOutParam(fp.Key, values, fp.PreserveCommas));
             }
+        }
+
+        /// <summary>
+        /// Splits comma-separated values into individual entries, trims whitespace,
+        /// and drops empty segments. Returns the original list unchanged when no
+        /// commas are present.
+        /// </summary>
+        private static IReadOnlyList<string> NormalizeCommaValues(IReadOnlyList<string> values)
+        {
+            // Fast path: check if any value contains a comma before allocating
+            bool hasComma = false;
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (values[i] is not null && values[i].Contains(','))
+                {
+                    hasComma = true;
+                    break;
+                }
+            }
+
+            if (!hasComma) return values;
+
+            var normalized = new List<string>();
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (values[i] is null) continue;
+
+                if (values[i].Contains(','))
+                {
+                    var segments = values[i].Split(',');
+                    foreach (var seg in segments)
+                    {
+                        var trimmed = seg.Trim();
+                        if (trimmed.Length > 0)
+                            normalized.Add(trimmed);
+                    }
+                }
+                else
+                {
+                    var trimmed = values[i].Trim();
+                    if (trimmed.Length > 0)
+                        normalized.Add(trimmed);
+                }
+            }
+
+            return normalized;
         }
 
         /// <summary>

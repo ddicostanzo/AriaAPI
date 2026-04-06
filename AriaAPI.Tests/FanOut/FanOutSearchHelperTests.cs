@@ -273,6 +273,168 @@ namespace AriaAPI.Tests.FanOut
             Assert.Single(result.Ids);
         }
 
+        // ---------------------------------------------------------------------------
+        // Comma normalization tests
+        // ---------------------------------------------------------------------------
+
+        /// <summary>
+        /// A single comma-separated value is split into individual values and each
+        /// is issued as a separate query (multi-valued fan-out).
+        /// </summary>
+        [Fact]
+        public async Task FanOut_CommaSeparatedSingleValue_SplitsIntoSeparateQueries()
+        {
+            var valueToIds = new Dictionary<string, string[]>
+            {
+                ["valA"] = new[] { "id-1" },
+                ["valB"] = new[] { "id-2" },
+            };
+
+            var fanOutParams = new[]
+            {
+                new FanOutSearchHelper.FanOutParam("category", new[] { "valA,valB" })
+            };
+
+            var result = await FanOutSearchHelper.FanOutSearchAsync<FhirPatient, IdResult>(
+                queryExecutor: ParamMappedExecutor("category", valueToIds),
+                resultMerger: MergeResults,
+                idExtractor: ExtractIds,
+                idFilter: FilterIds,
+                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                fanOutParams: fanOutParams
+            ).ConfigureAwait(false);
+
+            Assert.Equal(2, result.Ids.Count);
+            Assert.Contains("id-1", result.Ids);
+            Assert.Contains("id-2", result.Ids);
+        }
+
+        /// <summary>
+        /// Mixed comma-separated and individual values are all flattened into separate queries.
+        /// </summary>
+        [Fact]
+        public async Task FanOut_MixedCommaAndSeparateValues_AllSplitCorrectly()
+        {
+            var valueToIds = new Dictionary<string, string[]>
+            {
+                ["valA"] = new[] { "id-1" },
+                ["valB"] = new[] { "id-2" },
+                ["valC"] = new[] { "id-3" },
+            };
+
+            var fanOutParams = new[]
+            {
+                new FanOutSearchHelper.FanOutParam("category", new[] { "valA,valB", "valC" })
+            };
+
+            var result = await FanOutSearchHelper.FanOutSearchAsync<FhirPatient, IdResult>(
+                queryExecutor: ParamMappedExecutor("category", valueToIds),
+                resultMerger: MergeResults,
+                idExtractor: ExtractIds,
+                idFilter: FilterIds,
+                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                fanOutParams: fanOutParams
+            ).ConfigureAwait(false);
+
+            Assert.Equal(3, result.Ids.Count);
+            Assert.Contains("id-1", result.Ids);
+            Assert.Contains("id-2", result.Ids);
+            Assert.Contains("id-3", result.Ids);
+        }
+
+        /// <summary>
+        /// Whitespace around comma-separated values is trimmed.
+        /// </summary>
+        [Fact]
+        public async Task FanOut_CommaSeparatedWithWhitespace_TrimmedCorrectly()
+        {
+            var valueToIds = new Dictionary<string, string[]>
+            {
+                ["valA"] = new[] { "id-1" },
+                ["valB"] = new[] { "id-2" },
+            };
+
+            var fanOutParams = new[]
+            {
+                new FanOutSearchHelper.FanOutParam("category", new[] { "valA , valB" })
+            };
+
+            var result = await FanOutSearchHelper.FanOutSearchAsync<FhirPatient, IdResult>(
+                queryExecutor: ParamMappedExecutor("category", valueToIds),
+                resultMerger: MergeResults,
+                idExtractor: ExtractIds,
+                idFilter: FilterIds,
+                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                fanOutParams: fanOutParams
+            ).ConfigureAwait(false);
+
+            Assert.Equal(2, result.Ids.Count);
+            Assert.Contains("id-1", result.Ids);
+            Assert.Contains("id-2", result.Ids);
+        }
+
+        /// <summary>
+        /// Empty segments from consecutive commas are dropped.
+        /// </summary>
+        [Fact]
+        public async Task FanOut_ConsecutiveCommas_EmptySegmentsDropped()
+        {
+            var valueToIds = new Dictionary<string, string[]>
+            {
+                ["valA"] = new[] { "id-1" },
+                ["valB"] = new[] { "id-2" },
+            };
+
+            var fanOutParams = new[]
+            {
+                new FanOutSearchHelper.FanOutParam("category", new[] { "valA,,valB" })
+            };
+
+            var result = await FanOutSearchHelper.FanOutSearchAsync<FhirPatient, IdResult>(
+                queryExecutor: ParamMappedExecutor("category", valueToIds),
+                resultMerger: MergeResults,
+                idExtractor: ExtractIds,
+                idFilter: FilterIds,
+                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                fanOutParams: fanOutParams
+            ).ConfigureAwait(false);
+
+            Assert.Equal(2, result.Ids.Count);
+            Assert.Contains("id-1", result.Ids);
+            Assert.Contains("id-2", result.Ids);
+        }
+
+        /// <summary>
+        /// When <see cref="FanOutSearchHelper.FanOutParam.PreserveCommas"/> is true,
+        /// comma-separated values are passed through unchanged as a single query.
+        /// </summary>
+        [Fact]
+        public async Task FanOut_PreserveCommasTrue_RawValuePassedThrough()
+        {
+            var valueToIds = new Dictionary<string, string[]>
+            {
+                ["valA,valB"] = new[] { "id-1", "id-2" },
+            };
+
+            var fanOutParams = new[]
+            {
+                new FanOutSearchHelper.FanOutParam("identifier", new[] { "valA,valB" }, PreserveCommas: true)
+            };
+
+            var result = await FanOutSearchHelper.FanOutSearchAsync<FhirPatient, IdResult>(
+                queryExecutor: ParamMappedExecutor("identifier", valueToIds),
+                resultMerger: MergeResults,
+                idExtractor: ExtractIds,
+                idFilter: FilterIds,
+                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                fanOutParams: fanOutParams
+            ).ConfigureAwait(false);
+
+            Assert.Equal(2, result.Ids.Count);
+            Assert.Contains("id-1", result.Ids);
+            Assert.Contains("id-2", result.Ids);
+        }
+
         /// <summary>
         /// <see cref="FanOutSearchHelper.FanOutSearchAsync{T}(AriaFhirClient{T}, Func{Builder{T}}, IReadOnlyList{FanOutSearchHelper.FanOutParam}, int)"/>
         /// throws <see cref="ArgumentNullException"/> when the client is null.
