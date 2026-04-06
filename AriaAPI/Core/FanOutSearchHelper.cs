@@ -273,42 +273,17 @@ namespace AriaAPI.Core
 
         /// <summary>
         /// Splits comma-separated values into individual entries, trims whitespace,
-        /// and drops empty segments. Returns the original list unchanged when no
-        /// commas are present.
+        /// and drops empty/whitespace-only segments. All values are trimmed uniformly
+        /// regardless of whether they contain commas.
         /// </summary>
         private static IReadOnlyList<string> NormalizeCommaValues(IReadOnlyList<string> values)
         {
-            // Fast path: check if any value contains a comma before allocating
-            bool hasComma = false;
-            for (int i = 0; i < values.Count; i++)
-            {
-                if (values[i] is not null && values[i].Contains(','))
-                {
-                    hasComma = true;
-                    break;
-                }
-            }
-
-            if (!hasComma) return values;
-
             var normalized = new List<string>();
             for (int i = 0; i < values.Count; i++)
             {
-                if (values[i] is null) continue;
-
-                if (values[i].Contains(','))
+                foreach (var seg in values[i].Split(','))
                 {
-                    var segments = values[i].Split(',');
-                    foreach (var seg in segments)
-                    {
-                        var trimmed = seg.Trim();
-                        if (trimmed.Length > 0)
-                            normalized.Add(trimmed);
-                    }
-                }
-                else
-                {
-                    var trimmed = values[i].Trim();
+                    var trimmed = seg.Trim();
                     if (trimmed.Length > 0)
                         normalized.Add(trimmed);
                 }
