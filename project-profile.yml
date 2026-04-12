@@ -1,0 +1,47 @@
+project: AriaAPI
+stack: dotnet
+
+commands:
+  build: "dotnet build AriaAPI.sln"
+  test: "dotnet test AriaAPI.Tests/AriaAPI.Tests.csproj"
+  lint: "dotnet format --verify-no-changes"
+  pack: "dotnet pack AriaAPI/AriaAPI.csproj -o ./out"
+
+merge: squash
+branches:
+  target: master
+  pattern: "feat/{task-id}-{slug}"
+
+changelog:
+  file: CHANGELOG.md
+  format: keep-a-changelog
+
+compliance:
+  - name: hipaa
+    rules:
+      - "No PHI in plain-text logs — use PhiMask.Mask() (SHA-256, 8-char hex)"
+      - "Sensitive HTTP headers filtered: Authorization, X-Client-Secret, Password, PhoneNumber, SSN"
+      - "No credentials or connection strings in source"
+      - "detect-secrets scan passes against .secrets.baseline"
+  - name: api-safety
+    rules:
+      - "All search classes cap results with ListReturnLimit = 500"
+      - "Fan-out searches dedup by Resource.Id"
+
+review:
+  - "All new public types/members have XML doc comments (/// <summary>)"
+  - "No nullable reference warnings introduced"
+  - "Guard clauses use Ensure.NotNullOrWhiteSpace()"
+  - "New search classes follow the SingleResourceSearch pattern (sealed static, nested SearchParams record)"
+  - "New functionality follows existing patterns: builder, delegating handlers, DI extension methods"
+  - "Thread safety: lock(_syncRoot) for shared mutable state, idempotent Dispose()"
+  - "Namespaces follow directory structure"
+
+context:
+  - "This is a class library (NuGet package), not a standalone executable"
+  - "FHIR R4 via Hl7.Fhir.R4 v6.0.1 (Firely SDK)"
+  - ".NET 10, OutputType=Library, ImplicitUsings disabled"
+  - "OAuth2 client_credentials flow with 30s expiry skew in TokenProvider"
+  - "Build exclusions: Config/, Resources/, SQL/, Workflows/ dirs"
+  - "37 implemented FHIR resource types"
+  - "Target branch is master (not main)"
