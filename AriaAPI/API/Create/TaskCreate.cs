@@ -91,11 +91,11 @@ public static class TaskCreate
         ArgumentNullException.ThrowIfNull(configurator);
         ArgumentNullException.ThrowIfNull(p);
         ArgumentNullException.ThrowIfNull(logger);
-        ArgumentNullException.ThrowIfNull(p.PatientReference, nameof(p.PatientReference));
-        var patRef = p.PatientReference.Trim();
 
-        if (string.IsNullOrWhiteSpace(patRef))
-            throw new ArgumentException("PatientReference is required. It is blank.");
+        ArgumentException.ThrowIfNullOrWhiteSpace(
+            p.PatientReference,
+            nameof(TaskCreateParams.PatientReference));
+
 
         ct.ThrowIfCancellationRequested();
 

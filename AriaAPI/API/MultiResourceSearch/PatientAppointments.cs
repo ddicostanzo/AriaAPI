@@ -172,7 +172,7 @@ namespace AriaAPI.API.MultiResourceSearch
         {
             if (end < start) throw new ArgumentException("end must be >= start");
             if (listReturnLimit <= 0) listReturnLimit = int.MaxValue;
-            categories ??= Enumerable.Empty<AppointmentCategory>();
+            categories ??= [];
 
             var patient = await ResolvePatientAsync(configurator, patientIdentifier, ct);
             if (patient == null)
