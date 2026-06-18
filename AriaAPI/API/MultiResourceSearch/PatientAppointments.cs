@@ -1,4 +1,4 @@
-// Copyright (c) 2025-2026 Dominic DiCostanzo. Licensed under AGPL-3.0.
+﻿// Copyright (c) 2025-2026 Dominic DiCostanzo. Licensed under AGPL-3.0.
 ﻿using AriaAPI.Core;
 using AriaAPI.Networking.Core;
 using Hl7.Fhir.Model;
@@ -69,7 +69,7 @@ namespace AriaAPI.API.MultiResourceSearch
 
             var apptClient = configurator.ForResource<Appointment>(ct);
             var apptBuilder = new Builder<Appointment>()
-                                .ForPatient(patient.Id)
+                                .ForPatient(patient.Id ?? throw new InvalidOperationException("Patient has null Id"))
                                 .With("date", $"ge{start:O}")
                                 .With("date", $"le{end:O}");
             if (listReturnLimit != int.MaxValue) apptBuilder.WithCount(listReturnLimit);
@@ -101,7 +101,7 @@ namespace AriaAPI.API.MultiResourceSearch
 
             var apptClient = configurator.ForResource<Appointment>(ct);
             var apptBuilder = new Builder<Appointment>()
-                                .ForPatient(patient.Id)
+                                .ForPatient(patient.Id ?? throw new InvalidOperationException("Patient has null Id"))
                                 .With("date", $"ge{start:O}")
                                 .With("date", $"le{end:O}")
                                 .With(CategorySearchParam, categoryDisplay);
@@ -131,7 +131,7 @@ namespace AriaAPI.API.MultiResourceSearch
 
             var apptClient = configurator.ForResource<Appointment>(ct);
             var apptBuilder = new Builder<Appointment>()
-                                .ForPatient(patient.Id)
+                                .ForPatient(patient.Id ?? throw new InvalidOperationException("Patient has null Id"))
                                 .With(CategorySearchParam, categoryDisplay);
             if (listReturnLimit != int.MaxValue) apptBuilder.WithCount(listReturnLimit);
             var appointments = await apptClient.AggregateResourcesAsync(apptBuilder.Build()).ConfigureAwait(false);
@@ -183,7 +183,7 @@ namespace AriaAPI.API.MultiResourceSearch
             Builder<Appointment> MakeBaseBuilder()
             {
                 var b = new Builder<Appointment>()
-                    .ForPatient(patient.Id)
+                    .ForPatient(patient.Id ?? throw new InvalidOperationException("Patient has null Id"))
                     .With("date", $"ge{start:O}")
                     .With("date", $"le{end:O}");
                 if (listReturnLimit != int.MaxValue) b.WithCount(listReturnLimit);

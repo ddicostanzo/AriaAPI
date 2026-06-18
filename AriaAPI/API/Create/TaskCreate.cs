@@ -1,11 +1,10 @@
-// Copyright (c) 2025-2026 Dominic DiCostanzo. Licensed under AGPL-3.0.
-﻿
+﻿// Copyright (c) 2025-2026 Dominic DiCostanzo. Licensed under AGPL-3.0.
+
 using AriaAPI.Core;
 using Hl7.Fhir.Model;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,25 +38,45 @@ namespace AriaAPI.API.TaskCreate
             /// <summary>Task intent: unknown | proposal | plan | order | original-order | reflex-order | filler-order | instance-order | option.</summary>
             internal string Intent { get; init; } = "order";
 
-            /// <summary>Optional focus of the task, e.g. "DocumentReference/xyz" or "ServiceRequest/abc".</summary>
+            /// <summary>Optional focus of the task, e.g. "DocumentReference/xyz", "ServiceRequest/abc", or "ActivityDefinition/abc".</summary>
             public string? FocusReference { get; init; }
 
-            /// <summary>Optional authoredOn (if omitted, server may set). </summary>
+            /// <summary>Optional authoredOn. If omitted, server may set.</summary>
             public DateTimeOffset? AuthoredOn { get; init; }
 
             /// <summary>Optional notes displayed in Task.note.</summary>
             public List<string>? Notes { get; init; }
-            /// <summary>Duration extensions for the task. Defaults to a 10-minute duration using the Varian minutesDuration extension.</summary>
-            public List<Extension> Duration { get; set; } = new List<Extension>() 
+
+            /// <summary>
+            /// Optional ARIA task participants / assignees.
+            /// 
+            /// ARIA represents these as Task.input entries where:
+            /// input.type.coding.code = "Participant"
+            /// input.valueReference = the participant reference.
+            /// 
+            /// Examples:
+            /// Location/Location-10899      Billing &amp; Coding
+            /// Device/Device-1705          Chart Check Billing
+            /// Practitioner/Practitioner-x Staff member
+            /// Organization/Organization-x Organization or department
+            /// </summary>
+            public List<ResourceReference> Participants { get; init; } = new();
+
+            /// <summary>
+            /// Duration extensions for the task. Defaults to a 10-minute duration using the Varian minutesDuration extension.
+            /// </summary>
+            public List<Extension> Duration { get; set; } = new()
+            {
+                new Extension
                 {
-                    new Extension()
-                        {
-                            Url = "http://varian.com/fhir/v1/StructureDefinition/task-minutesDuration",
-                            Value = new FhirDecimal(10) // Default duration of 10 minutes
-                        }
-                };
+                    Url = "http://varian.com/fhir/v1/StructureDefinition/task-minutesDuration",
+                    Value = new FhirDecimal(10)
+                }
+            };
+
             /// <summary>Optional restriction component defining who can fulfill the task and repetition limits.</summary>
             public TaskResource.RestrictionComponent Restriction { get; set; } = new TaskResource.RestrictionComponent();
+
         }
 
         /// <summary>
@@ -69,8 +88,12 @@ namespace AriaAPI.API.TaskCreate
             ILogger logger,
             CancellationToken ct = default)
         {
-            if (configurator is null) throw new ArgumentNullException(nameof(configurator));
-            if (p is null) throw new ArgumentNullException(nameof(p));
+            if (configurator is null)
+                throw new ArgumentNullException(nameof(configurator));
+            if (p is null)
+                throw new ArgumentNullException(nameof(p));
+            if (logger is null)
+                throw new ArgumentNullException(nameof(logger));
 
             if (string.IsNullOrWhiteSpace(p.PatientReference))
                 throw new ArgumentException("PatientReference is required", nameof(p.PatientReference));
@@ -83,7 +106,7 @@ namespace AriaAPI.API.TaskCreate
                 Status = ParseStatus(p.Status),
                 Intent = ParseIntent(p.Intent),
 
-                // The patient the task is for
+                // The patient the task is for.
                 For = new ResourceReference(p.PatientReference),
 
                 Description = p.Description,
@@ -91,16 +114,19 @@ namespace AriaAPI.API.TaskCreate
                 Code = p.Code,
 
                 AuthoredOnElement = p.AuthoredOn.HasValue
-                    ? new FhirDateTime(p.AuthoredOn.Value.DateTime)
+                    ? new FhirDateTime(p.AuthoredOn.Value)
                     : null,
-                Restriction = p.Restriction,
-                Extension = p.Duration,
 
+                Restriction = p.Restriction,
+
+                Extension = p.Duration
             };
 
-            // Focus (e.g., DocumentReference)
+            // Focus, e.g. DocumentReference, ServiceRequest, ActivityDefinition, etc.
             if (!string.IsNullOrWhiteSpace(p.FocusReference))
+            {
                 task.Focus = new ResourceReference(p.FocusReference);
+            }
 
             // Notes
             if (p.Notes is { Count: > 0 })
@@ -111,7 +137,35 @@ namespace AriaAPI.API.TaskCreate
                     .ToList();
             }
 
-            // Create via resource client
+            // Participants / assignees
+            //
+            // ARIA stores task participants as Task.input entries:
+            // input.type = Participant
+            // input.valueReference = Location/..., Device/..., Practitioner/..., etc.
+            if (p.Participants is { Count: > 0 })
+            {
+                task.Input = p.Participants
+                    .Where(participant => participant is not null)
+                    .Where(participant => !string.IsNullOrWhiteSpace(participant.Reference))
+                    .Select(participant => new TaskResource.ParameterComponent
+                    {
+                        Type = new CodeableConcept
+                        {
+                            Coding = new List<Coding>
+                            {
+                                new Coding
+                                {
+                                    Code = "Participant",
+                                    Display = "Participant"
+                                }
+                            }
+                        },
+                        Value = participant
+                    })
+                    .ToList();
+            }
+
+            // Create via resource client.
             var client = configurator.ForResource<TaskResource>(ct);
             var created = await client.CreateAsync(task).ConfigureAwait(false);
 
@@ -123,7 +177,7 @@ namespace AriaAPI.API.TaskCreate
         /// <summary>
         /// Valid FHIR Task status codes.
         /// </summary>
-        private static readonly HashSet<string> ValidStatusCodes = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> _validStatusCodes = new(StringComparer.OrdinalIgnoreCase)
         {
             "draft", "requested", "received", "accepted", "rejected", "ready",
             "cancelled", "in-progress", "on-hold", "failed", "completed", "entered-in-error"
@@ -132,7 +186,7 @@ namespace AriaAPI.API.TaskCreate
         /// <summary>
         /// Valid FHIR Task intent codes.
         /// </summary>
-        private static readonly HashSet<string> ValidIntentCodes = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> _validIntentCodes = new(StringComparer.OrdinalIgnoreCase)
         {
             "unknown", "proposal", "plan", "order", "original-order",
             "reflex-order", "filler-order", "instance-order", "option"
@@ -141,9 +195,13 @@ namespace AriaAPI.API.TaskCreate
         private static TaskResource.TaskStatus ParseStatus(string? s)
         {
             var normalized = (s ?? "requested").Trim().ToLowerInvariant();
-            if (!ValidStatusCodes.Contains(normalized))
+
+            if (!_validStatusCodes.Contains(normalized))
+            {
                 throw new ArgumentException(
-                    $"Invalid FHIR Task status '{s}'. Valid values: {string.Join(", ", ValidStatusCodes)}.", nameof(s));
+                    $"Invalid FHIR Task status '{s}'. Valid values: {string.Join(", ", _validStatusCodes)}.",
+                    nameof(s));
+            }
 
             return normalized switch
             {
@@ -159,16 +217,21 @@ namespace AriaAPI.API.TaskCreate
                 "failed" => TaskResource.TaskStatus.Failed,
                 "completed" => TaskResource.TaskStatus.Completed,
                 "entered-in-error" => TaskResource.TaskStatus.EnteredInError,
-                _ => throw new System.Diagnostics.UnreachableException($"Validated status '{normalized}' has no switch arm.")
+                _ => throw new System.Diagnostics.UnreachableException(
+                    $"Validated status '{normalized}' has no switch arm.")
             };
         }
 
         private static TaskResource.TaskIntent ParseIntent(string? s)
         {
             var normalized = (s ?? "order").Trim().ToLowerInvariant();
-            if (!ValidIntentCodes.Contains(normalized))
+
+            if (!_validIntentCodes.Contains(normalized))
+            {
                 throw new ArgumentException(
-                    $"Invalid FHIR Task intent '{s}'. Valid values: {string.Join(", ", ValidIntentCodes)}.", nameof(s));
+                    $"Invalid FHIR Task intent '{s}'. Valid values: {string.Join(", ", _validIntentCodes)}.",
+                    nameof(s));
+            }
 
             return normalized switch
             {
@@ -181,10 +244,9 @@ namespace AriaAPI.API.TaskCreate
                 "filler-order" => TaskResource.TaskIntent.FillerOrder,
                 "instance-order" => TaskResource.TaskIntent.InstanceOrder,
                 "option" => TaskResource.TaskIntent.Option,
-                _ => throw new System.Diagnostics.UnreachableException($"Validated intent '{normalized}' has no switch arm.")
+                _ => throw new System.Diagnostics.UnreachableException(
+                    $"Validated intent '{normalized}' has no switch arm.")
             };
         }
-
-
     }
 }

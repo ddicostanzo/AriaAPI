@@ -1,4 +1,4 @@
-// Copyright (c) 2025-2026 Dominic DiCostanzo. Licensed under AGPL-3.0.
+﻿// Copyright (c) 2025-2026 Dominic DiCostanzo. Licensed under AGPL-3.0.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -80,9 +80,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.Equal(3, result.Ids.Count);
             Assert.Contains("id-1", result.Ids);
@@ -113,9 +113,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             // Union: id-1 | id-2 | id-3
             Assert.Equal(3, result.Ids.Count);
@@ -170,9 +170,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             // Only "id-2" appears in both param unions
             Assert.Single(result.Ids);
@@ -202,9 +202,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             // id-1 should appear exactly once
             Assert.Equal(3, result.Ids.Count);
@@ -230,9 +230,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             // The fast path fires (no multi-valued params), so the fixed executor runs once
             // and returns both IDs.
@@ -265,9 +265,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.True(paramSeen, "Single-valued param should be folded into base builder.");
             Assert.Single(result.Ids);
@@ -300,9 +300,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.Equal(2, result.Ids.Count);
             Assert.Contains("id-1", result.Ids);
@@ -332,9 +332,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.Equal(3, result.Ids.Count);
             Assert.Contains("id-1", result.Ids);
@@ -364,9 +364,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.Equal(2, result.Ids.Count);
             Assert.Contains("id-1", result.Ids);
@@ -395,9 +395,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.Equal(2, result.Ids.Count);
             Assert.Contains("id-1", result.Ids);
@@ -426,9 +426,9 @@ namespace AriaAPI.Tests.FanOut
                 resultMerger: MergeResults,
                 idExtractor: ExtractIds,
                 idFilter: FilterIds,
-                baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                baseBuilderFactory: () => new Builder<FhirPatient>(),
                 fanOutParams: fanOutParams
-            ).ConfigureAwait(false);
+            );
 
             Assert.Equal(2, result.Ids.Count);
             Assert.Contains("id-1", result.Ids);
@@ -449,10 +449,10 @@ namespace AriaAPI.Tests.FanOut
                     resultMerger: MergeResults,
                     idExtractor: ExtractIds,
                     idFilter: FilterIds,
-                    baseBuilderFactory: () => new AriaAPI.Networking.Core.Builder<FhirPatient>(),
+                    baseBuilderFactory: () => new Builder<FhirPatient>(),
                     fanOutParams: Array.Empty<FanOutSearchHelper.FanOutParam>()
                 ).ConfigureAwait(false);
-            }).ConfigureAwait(false);
+            });
         }
     }
 }
