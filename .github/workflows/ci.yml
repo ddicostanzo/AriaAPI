@@ -24,11 +24,14 @@ jobs:
       - name: Show .NET info
         run: dotnet --info
 
+      - name: Clean
+        run: dotnet clean AriaAPI.sln -c Release --disable-build-servers
+
       - name: Restore dependencies
-        run: dotnet restore AriaAPI.sln
+        run: dotnet restore AriaAPI.sln --disable-build-servers
 
       - name: Build
-        run: dotnet build AriaAPI.sln --no-restore -c Release
+        run: dotnet build AriaAPI.sln --no-restore -c Release --disable-build-servers -maxcpucount:1
 
       - name: Test
-        run: dotnet test AriaAPI.Tests/AriaAPI.Tests.csproj --no-build -c Release --verbosity normal
+        run: dotnet test AriaAPI.Tests/AriaAPI.Tests.csproj --no-build --no-restore -c Release --verbosity normal
