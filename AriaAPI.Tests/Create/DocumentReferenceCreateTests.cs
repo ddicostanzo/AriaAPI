@@ -180,6 +180,60 @@ namespace AriaAPI.Tests.Create
             Assert.Equal(expectedResolvedPath, ex.FileName);
         }
 
+        [Fact]
+        public async Task CreateFromFileAsync_PatientReferenceWithoutSlash_ThrowsArgumentException()
+        {
+            // Reference-format validation applies to all caller references, not just authenticator.
+            var configurator = UninitializedConfigurator();
+            var tmpFile = Path.GetTempFileName();
+            try
+            {
+                await File.WriteAllBytesAsync(tmpFile, new byte[10]);
+
+                var p = new DocumentReferenceCreate.DocumentReferenceCreateParams
+                {
+                    SourceFilePath = tmpFile,
+                    Type = AriaAPI.API.SearchHelpers.SearchTypes.DocumentType.AdvanceDirective,
+                    PatientReference = "123"
+                };
+
+                var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+                    DocumentReferenceCreate.CreateFromFileAsync(configurator, p, Logger));
+                Assert.Contains("PatientReference", ex.Message);
+            }
+            finally
+            {
+                File.Delete(tmpFile);
+            }
+        }
+
+        [Fact]
+        public async Task CreateFromFileAsync_ResolverOrganizationWithEmptyId_ThrowsArgumentException()
+        {
+            // "Organization/" passes the StartsWith check but has an empty id; ExtractId must
+            // fail fast rather than passing an empty publisher to the type resolver.
+            var configurator = UninitializedConfigurator();
+            var tmpFile = Path.GetTempFileName();
+            try
+            {
+                await File.WriteAllBytesAsync(tmpFile, new byte[10]);
+
+                var p = new DocumentReferenceCreate.DocumentReferenceCreateParams
+                {
+                    SourceFilePath = tmpFile,
+                    Type = AriaAPI.API.SearchHelpers.SearchTypes.DocumentType.AdvanceDirective,
+                    DocumentTypeResolverOrganizationReference = "Organization/"
+                };
+
+                await Assert.ThrowsAsync<ArgumentException>(() =>
+                    DocumentReferenceCreate.CreateFromFileAsync(configurator, p, Logger));
+            }
+            finally
+            {
+                File.Delete(tmpFile);
+            }
+        }
+
         private const string SupervisorExtensionUrl =
             "http://varian.com/fhir/v1/StructureDefinition/documentreference-supervisor";
 

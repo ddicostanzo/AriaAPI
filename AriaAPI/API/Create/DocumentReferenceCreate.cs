@@ -185,12 +185,14 @@ namespace AriaAPI.API.DocumentReferenceCreate
         public const long DefaultMaxFileSizeBytes = 10485760L;
 
         /// <summary>
-        /// Cached, pretty-printing FHIR serializer options for verification logging.
-        /// Building the FHIR converter stack is non-trivial, so the options are created once and
-        /// reused; <see cref="JsonSerializerOptions"/> is thread-safe after first use.
+        /// Lazily-built, pretty-printing FHIR serializer options for verification logging.
+        /// Building the FHIR converter stack is non-trivial, so the options are created once on
+        /// first use and reused; deferring construction keeps the cost (and any initialization
+        /// failure) scoped to the opt-in logging path rather than the type initializer.
+        /// <see cref="JsonSerializerOptions"/> is thread-safe after first use.
         /// </summary>
-        private static readonly JsonSerializerOptions _verificationJsonOptions =
-            new JsonSerializerOptions { WriteIndented = true }.ForFhir(ModelInfo.ModelInspector);
+        private static readonly Lazy<JsonSerializerOptions> _verificationJsonOptions =
+            new(() => new JsonSerializerOptions { WriteIndented = true }.ForFhir(ModelInfo.ModelInspector));
 
 
         /// <summary>
@@ -225,11 +227,21 @@ namespace AriaAPI.API.DocumentReferenceCreate
             if (!p.Type.HasValue)
                 throw new ArgumentException("Document Type is required.", nameof(p));
 
-            // AuthenticatorReference is optional, but when supplied it must be a well-formed
-            // "ResourceType/Id" reference so a malformed value never reaches the server.
+            // Caller-supplied references are optional, but when supplied each must be a well-formed
+            // "ResourceType/Id" reference so a malformed value never reaches the server. Validated
+            // here (before the resolver/network call) so the failure is fast and cheap.
             EnsureValidReferenceFormat(
-                p.AuthenticatorReference,
-                nameof(DocumentReferenceCreateParams.AuthenticatorReference));
+                p.PatientReference, nameof(DocumentReferenceCreateParams.PatientReference));
+            EnsureValidReferenceFormat(
+                p.AuthorReference, nameof(DocumentReferenceCreateParams.AuthorReference));
+            EnsureValidReferenceFormat(
+                p.AuthenticatorReference, nameof(DocumentReferenceCreateParams.AuthenticatorReference));
+            EnsureValidReferenceFormat(
+                p.CustodianReference, nameof(DocumentReferenceCreateParams.CustodianReference));
+            EnsureValidReferenceFormat(
+                p.SupervisorReference, nameof(DocumentReferenceCreateParams.SupervisorReference));
+            EnsureValidReferenceFormat(
+                p.InstitutionReference, nameof(DocumentReferenceCreateParams.InstitutionReference));
 
             string resolverRef = GetResolverOrganizationReference(p);
             string resolverId = ExtractId(resolverRef);
@@ -487,7 +499,7 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 }
             }
 
-            return JsonSerializer.Serialize(target, _verificationJsonOptions);
+            return JsonSerializer.Serialize(target, _verificationJsonOptions.Value);
         }
 
         private static ResourceReference CreateRef(string reference, string? display = null)
@@ -499,8 +511,9 @@ namespace AriaAPI.API.DocumentReferenceCreate
         }
 
         /// <summary>
-        /// Validates that an optional FHIR reference, when provided, is in "ResourceType/Id" form.
-        /// No-op when the reference is null or whitespace (the reference is optional).
+        /// Validates that an optional FHIR reference, when provided, is in "ResourceType/Id" form
+        /// (both the resource type and the id must be non-empty). No-op when the reference is null
+        /// or whitespace (the reference is optional).
         /// </summary>
         private static void EnsureValidReferenceFormat(string? reference, string referenceName)
         {
@@ -508,7 +521,9 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 return;
 
             var parts = reference.Split('/');
-            if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
+            if (parts.Length < 2 ||
+                string.IsNullOrWhiteSpace(parts[0]) ||
+                string.IsNullOrWhiteSpace(parts[1]))
                 throw new ArgumentException(
                     $"{referenceName} must be in 'ResourceType/Id' format, got: \"{reference}\".",
                     "p");
@@ -517,7 +532,7 @@ namespace AriaAPI.API.DocumentReferenceCreate
         private static string ExtractId(string reference)
         {
             var parts = reference.Split('/');
-            if (parts.Length < 2)
+            if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
                 throw new ArgumentException("Invalid FHIR reference");
             return parts[1];
         }
