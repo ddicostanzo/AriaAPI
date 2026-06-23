@@ -202,9 +202,6 @@ namespace AriaAPI.API.DocumentReferenceCreate
             if (string.IsNullOrWhiteSpace(p.SourceFilePath))
                 throw new FileNotFoundException("SourceFilePath must be specified.", p.SourceFilePath);
 
-            if (!p.Type.HasValue)
-                throw new ArgumentException("Document Type is required.", nameof(p));
-
             string path = Path.GetFullPath(p.SourceFilePath);
 
             if (!File.Exists(path))
@@ -216,6 +213,9 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 throw new InvalidOperationException($"File too large: {fi.Length}");
 
             ct.ThrowIfCancellationRequested();
+
+            if (!p.Type.HasValue)
+                throw new ArgumentException("Document Type is required.", nameof(p));
 
             string resolverRef = GetResolverOrganizationReference(p);
             string resolverId = ExtractId(resolverRef);
