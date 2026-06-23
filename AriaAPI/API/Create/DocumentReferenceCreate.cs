@@ -461,7 +461,7 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 }
             }
 
-            var options = new JsonSerializerOptions().ForFhir(typeof(DocumentReference).Assembly);
+            var options = new JsonSerializerOptions().ForFhir(ModelInfo.ModelInspector);
             options.WriteIndented = true;
             return JsonSerializer.Serialize(target, options);
         }
