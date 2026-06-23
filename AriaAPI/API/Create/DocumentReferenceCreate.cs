@@ -2,12 +2,15 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using AriaAPI.API.Create;
+using AriaAPI.API.IdentityResolvers;
 using AriaAPI.API.SearchHelpers;
 using AriaAPI.Core;
 using Hl7.Fhir.Model;
+using Hl7.Fhir.Serialization;
 using Microsoft.Extensions.Logging;
 using CodeableConcept = Hl7.Fhir.Model.CodeableConcept;
 
@@ -151,6 +154,31 @@ namespace AriaAPI.API.DocumentReferenceCreate
             /// </summary>
             public bool IncludeAllVarianExtensions { get; init; } = false;
 
+            /// <summary>
+            /// When <see langword="true"/>, the created DocumentReference is serialized to FHIR
+            /// JSON and written to the logger at <see cref="LogLevel.Debug"/> so the resource can
+            /// be verified against the vendor's Aria tooling.
+            /// <para>
+            /// <b>PHI warning:</b> the serialized resource contains Protected Health Information
+            /// (patient/practitioner references, identifiers, and — when
+            /// <see cref="IncludeAttachmentDataInJsonLog"/> is set — the full document bytes).
+            /// Enable only in controlled environments and route Debug logs to a secure sink.
+            /// Defaults to <see langword="false"/>.
+            /// </para>
+            /// </summary>
+            public bool LogResourceJson { get; init; } = false;
+
+            /// <summary>
+            /// Controls whether the base64 <c>Attachment.data</c> payload is included when
+            /// <see cref="LogResourceJson"/> serializes the resource. When <see langword="false"/>
+            /// (the default) the data is redacted with a placeholder noting its size, keeping the
+            /// log small while preserving the resource structure (type, category, identifiers, and
+            /// Varian extensions) for verification.
+            /// <para><b>PHI warning:</b> setting this to <see langword="true"/> writes the full
+            /// document contents to the log in plain text.</para>
+            /// </summary>
+            public bool IncludeAttachmentDataInJsonLog { get; init; } = false;
+
         }
 
         /// <summary>Default max file size = 10 MB.</summary>
@@ -167,12 +195,9 @@ namespace AriaAPI.API.DocumentReferenceCreate
             long maxFileSizeBytes = DefaultMaxFileSizeBytes,
             CancellationToken ct = default)
         {
-            if (configurator == null)
-                throw new ArgumentNullException(nameof(configurator));
-            if (p == null)
-                throw new ArgumentNullException(nameof(p));
-            if (logger == null)
-                throw new ArgumentNullException(nameof(logger));
+            ArgumentNullException.ThrowIfNull(configurator);
+            ArgumentNullException.ThrowIfNull(p);
+            ArgumentNullException.ThrowIfNull(logger);
 
             if (string.IsNullOrWhiteSpace(p.SourceFilePath))
                 throw new FileNotFoundException("SourceFilePath must be specified.", p.SourceFilePath);
@@ -230,10 +255,16 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 Category = p.Category
             };
 
-            AddRef(() => doc.Subject = CreateRef(p.PatientReference ?? throw new ArgumentNullException(nameof(p.PatientReference)), p.PatientDisplay), p.PatientReference);
+            if (!string.IsNullOrWhiteSpace(p.PatientReference))
+                doc.Subject = CreateRef(p.PatientReference, p.PatientDisplay);
+
             AddAuthor(doc, p);
-            AddRef(() => doc.Authenticator = CreateRef(p.AuthenticatorReference ?? throw new ArgumentNullException(nameof(p.AuthenticatorReference)), p.AuthenticatorDisplay), p.AuthenticatorReference);
-            AddRef(() => doc.Custodian = CreateRef(p.CustodianReference ?? throw new ArgumentNullException(nameof(p.CustodianReference)), p.CustodianDisplay), p.CustodianReference);
+
+            if (!string.IsNullOrWhiteSpace(p.AuthenticatorReference))
+                doc.Authenticator = CreateRef(p.AuthenticatorReference, p.AuthenticatorDisplay);
+
+            if (!string.IsNullOrWhiteSpace(p.CustodianReference))
+                doc.Custodian = CreateRef(p.CustodianReference, p.CustodianDisplay);
 
             AddIdentifiers(doc, p, bytes);
 
@@ -243,7 +274,14 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 .ForResource<DocumentReference>(ct)
                 .CreateAsync(doc);
 
-            logger.LogInformation("Created DocumentReference {Id}", created?.Id);
+            if (p.LogResourceJson && logger.IsEnabled(LogLevel.Debug) && created != null)
+            {
+                logger.LogDebug(
+                    "DocumentReference JSON for verification: {Json}",
+                    SerializeForVerification(created, p.IncludeAttachmentDataInJsonLog));
+            }
+
+            logger.LogInformation("Created DocumentReference {Id}", PhiMask.Mask(created?.Id ?? ""));
 
             return created ?? throw new InvalidOperationException("Failed to create DocumentReference");
         }
@@ -284,88 +322,148 @@ namespace AriaAPI.API.DocumentReferenceCreate
             doc.Identifier.Add(new Identifier("urn:hash:sha256", CreateHelpers.HashHelper.Sha256Hex(bytes)));
         }
 
-        /// <summary>Add Varian extensions when individually enabled.</summary>
+        /// <summary>Builds Varian extensions, then assigns them to the resource when any apply.</summary>
         private static void AddExtensions(DocumentReference doc, DocumentReferenceCreateParams p)
+        {
+            var ext = BuildVarianExtensions(p);
+            if (ext.Count > 0)
+                doc.Extension = ext;
+        }
+
+        /// <summary>
+        /// Builds the list of Varian-specific extensions requested by <paramref name="p"/>.
+        /// </summary>
+        /// <remarks>
+        /// An extension is emitted when its individual flag is set <b>or</b> when
+        /// <see cref="DocumentReferenceCreateParams.IncludeAllVarianExtensions"/> is set and the
+        /// corresponding value is present. Setting an individual flag without its value throws
+        /// <see cref="ArgumentException"/> (explicit, unfulfillable intent); the bulk flag skips
+        /// extensions whose values are missing.
+        /// </remarks>
+        /// <param name="p">The create parameters describing which extensions to emit.</param>
+        /// <returns>The list of extensions to attach (possibly empty).</returns>
+        internal static List<Extension> BuildVarianExtensions(DocumentReferenceCreateParams p)
         {
             var ext = new List<Extension>();
 
-            bool includeSupervisor =
-                p.IncludeAllVarianExtensions || p.IncludeSupervisorExtension;
-
-            bool includeAuthenticatedDate =
-                p.IncludeAllVarianExtensions || p.IncludeAuthenticatedDateExtension;
-
-            bool includeTemplateName =
-                p.IncludeAllVarianExtensions || p.IncludeTemplateNameExtension;
-
-            bool includeInstitution =
-                p.IncludeAllVarianExtensions || p.IncludeLoginInstitutionExtension;
-
-            bool includeDocumentLocation =
-                p.IncludeAllVarianExtensions || p.IncludeDocumentLocationExtension;
-
-            if (includeSupervisor)
-            {
-                if (string.IsNullOrWhiteSpace(p.SupervisorReference))
-                    throw new ArgumentException(
-                        "IncludeSupervisorExtension is true, but SupervisorReference was not provided.",
-                        nameof(p));
-
-                ext.Add(new Extension(
+            AddVarianExtension(
+                ext,
+                explicitFlag: p.IncludeSupervisorExtension,
+                bulkFlag: p.IncludeAllVarianExtensions,
+                hasValue: !string.IsNullOrWhiteSpace(p.SupervisorReference),
+                missingMessage: "IncludeSupervisorExtension is true, but SupervisorReference was not provided.",
+                build: () => new Extension(
                     "http://varian.com/fhir/v1/StructureDefinition/documentreference-supervisor",
-                    CreateRef(p.SupervisorReference, p.SupervisorDisplay)));
-            }
+                    CreateRef(p.SupervisorReference!, p.SupervisorDisplay)));
 
-            if (includeAuthenticatedDate)
-            {
-                if (!p.AuthenticatedDate.HasValue)
-                    throw new ArgumentException(
-                        "IncludeAuthenticatedDateExtension is true, but AuthenticatedDate was not provided.",
-                        nameof(p));
-
-                ext.Add(new Extension(
+            AddVarianExtension(
+                ext,
+                explicitFlag: p.IncludeAuthenticatedDateExtension,
+                bulkFlag: p.IncludeAllVarianExtensions,
+                hasValue: p.AuthenticatedDate.HasValue,
+                missingMessage: "IncludeAuthenticatedDateExtension is true, but AuthenticatedDate was not provided.",
+                build: () => new Extension(
                     "http://varian.com/fhir/v1/StructureDefinition/documentreference-authenticated",
-                    new FhirDateTime(p.AuthenticatedDate.Value)));
-            }
+                    new FhirDateTime(p.AuthenticatedDate!.Value)));
 
-            if (includeTemplateName)
-            {
-                if (string.IsNullOrWhiteSpace(p.TemplateName))
-                    throw new ArgumentException(
-                        "IncludeTemplateNameExtension is true, but TemplateName was not provided.",
-                        nameof(p));
-
-                ext.Add(new Extension(
+            AddVarianExtension(
+                ext,
+                explicitFlag: p.IncludeTemplateNameExtension,
+                bulkFlag: p.IncludeAllVarianExtensions,
+                hasValue: !string.IsNullOrWhiteSpace(p.TemplateName),
+                missingMessage: "IncludeTemplateNameExtension is true, but TemplateName was not provided.",
+                build: () => new Extension(
                     "http://varian.com/fhir/v1/StructureDefinition/documentreference-templateName",
                     new FhirString(p.TemplateName)));
-            }
 
-            if (includeInstitution)
-            {
-                if (string.IsNullOrWhiteSpace(p.InstitutionReference))
-                    throw new ArgumentException(
-                        "IncludeInstitutionExtension is true, but InstitutionReference was not provided.",
-                        nameof(p));
-
-                ext.Add(new Extension(
+            AddVarianExtension(
+                ext,
+                explicitFlag: p.IncludeLoginInstitutionExtension,
+                bulkFlag: p.IncludeAllVarianExtensions,
+                hasValue: !string.IsNullOrWhiteSpace(p.InstitutionReference),
+                missingMessage: "IncludeLoginInstitutionExtension is true, but InstitutionReference was not provided.",
+                build: () => new Extension(
                     "http://varian.com/fhir/v1/StructureDefinition/login-institution",
-                    CreateRef(p.InstitutionReference, p.InstitutionDisplay)));
-            }
+                    CreateRef(p.InstitutionReference!, p.InstitutionDisplay)));
 
-            if (includeDocumentLocation)
-            {
-                if (string.IsNullOrWhiteSpace(p.DocumentLocation))
-                    throw new ArgumentException(
-                        "IncludeDocumentLocationExtension is true, but DocumentLocation was not provided.",
-                        nameof(p));
-
-                ext.Add(new Extension(
+            AddVarianExtension(
+                ext,
+                explicitFlag: p.IncludeDocumentLocationExtension,
+                bulkFlag: p.IncludeAllVarianExtensions,
+                hasValue: !string.IsNullOrWhiteSpace(p.DocumentLocation),
+                missingMessage: "IncludeDocumentLocationExtension is true, but DocumentLocation was not provided.",
+                build: () => new Extension(
                     "http://varian.com/fhir/v1/StructureDefinition/documentreference-documentLocation",
                     new FhirString(p.DocumentLocation)));
+
+            return ext;
+        }
+
+        /// <summary>
+        /// Adds an extension when explicitly requested (throwing if its value is missing) or when
+        /// bulk-enabled and the value is present.
+        /// </summary>
+        private static void AddVarianExtension(
+            List<Extension> ext,
+            bool explicitFlag,
+            bool bulkFlag,
+            bool hasValue,
+            string missingMessage,
+            Func<Extension> build)
+        {
+            if (explicitFlag)
+            {
+                if (!hasValue)
+                    throw new ArgumentException(missingMessage, "p");
+
+                ext.Add(build());
+            }
+            else if (bulkFlag && hasValue)
+            {
+                ext.Add(build());
+            }
+        }
+
+        /// <summary>
+        /// Serializes a DocumentReference to FHIR JSON for out-of-band verification.
+        /// </summary>
+        /// <remarks>
+        /// When <paramref name="includeAttachmentData"/> is <see langword="false"/> the base64
+        /// <c>Attachment.data</c> payload is redacted on a deep copy (the original is never
+        /// mutated) so the structure — including Varian extensions — can be inspected without
+        /// dumping document bytes.
+        /// </remarks>
+        /// <param name="doc">The resource to serialize.</param>
+        /// <param name="includeAttachmentData">Whether to retain the base64 attachment data.</param>
+        /// <returns>Pretty-printed FHIR JSON.</returns>
+        internal static string SerializeForVerification(DocumentReference doc, bool includeAttachmentData)
+        {
+            ArgumentNullException.ThrowIfNull(doc);
+
+            var target = doc;
+
+            if (!includeAttachmentData)
+            {
+                target = (DocumentReference)doc.DeepCopy();
+
+                if (target.Content != null)
+                {
+                    foreach (var content in target.Content)
+                    {
+                        if (content.Attachment?.Data is { } data)
+                        {
+                            content.Attachment.Data = null;
+                            content.Attachment.AddExtension(
+                                "urn:aria:redacted-attachment-data",
+                                new FhirString($"<redacted {data.Length} bytes>"));
+                        }
+                    }
+                }
             }
 
-            if (ext.Count > 0)
-                doc.Extension = ext;
+            var options = new JsonSerializerOptions().ForFhir(typeof(DocumentReference).Assembly);
+            options.WriteIndented = true;
+            return JsonSerializer.Serialize(target, options);
         }
 
         private static ResourceReference CreateRef(string reference, string? display = null)
@@ -376,12 +474,6 @@ namespace AriaAPI.API.DocumentReferenceCreate
             return r;
         }
 
-        private static void AddRef(Action setter, string? value)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-                setter();
-        }
-
         private static string ExtractId(string reference)
         {
             var parts = reference.Split('/');
@@ -390,21 +482,27 @@ namespace AriaAPI.API.DocumentReferenceCreate
             return parts[1];
         }
 
-        private static DocumentReferenceStatus ParseStatus(string? s) =>
-            (s ?? "current").ToLower() switch
+        internal static DocumentReferenceStatus ParseStatus(string? s) =>
+            (s ?? "current").Trim().ToLowerInvariant() switch
             {
+                "current" => DocumentReferenceStatus.Current,
                 "entered-in-error" => DocumentReferenceStatus.EnteredInError,
                 "superseded" => DocumentReferenceStatus.Superseded,
-                _ => DocumentReferenceStatus.Current
+                _ => throw new ArgumentException(
+                    $"Invalid DocumentReference status '{s}'. Valid values: current, entered-in-error, superseded.",
+                    nameof(s))
             };
 
-        private static CompositionStatus? ParseDocStatus(string? s) =>
-            (s ?? "final").ToLower() switch
+        internal static CompositionStatus? ParseDocStatus(string? s) =>
+            (s ?? "final").Trim().ToLowerInvariant() switch
             {
                 "preliminary" => CompositionStatus.Preliminary,
+                "final" => CompositionStatus.Final,
                 "entered-in-error" => CompositionStatus.EnteredInError,
                 "amended" => CompositionStatus.Amended,
-                _ => CompositionStatus.Final
+                _ => throw new ArgumentException(
+                    $"Invalid DocumentReference docStatus '{s}'. Valid values: preliminary, final, entered-in-error, amended.",
+                    nameof(s))
             };
 
 
