@@ -58,6 +58,25 @@ namespace AriaAPI.Core
 
         /// <summary>Gets or sets the maximum number of concurrent HTTP connections per FHIR server. Defaults to 50.</summary>
         public int MaxConnectionsPerServer { get; set; } = 50;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the raw HTTP request and response bodies
+        /// (e.g., the serialized FHIR bundle JSON) are captured for diagnostics. Defaults to <see langword="false"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// When enabled, a <c>RawCaptureHandler</c> is inserted into the HTTP pipeline and the most recent
+        /// request/response bodies are exposed via <see cref="ClientConfigurator.LastRawRequestBody"/>,
+        /// <see cref="ClientConfigurator.LastRawResponseBody"/>, and the
+        /// <see cref="ClientConfigurator.OnRawRequestCaptured"/> / <see cref="ClientConfigurator.OnRawResponseCaptured"/> events.
+        /// </para>
+        /// <para>
+        /// <b>HIPAA warning:</b> FHIR bundles contain Protected Health Information (PHI). Captured bodies are
+        /// <i>not</i> masked. Never write them to plain-text logs or any non-PHI-safe sink. Leave this
+        /// disabled in production unless you have a compliant destination for the captured data.
+        /// </para>
+        /// </remarks>
+        public bool CaptureRawBodies { get; set; } = false;
     }
 
     /// <summary>

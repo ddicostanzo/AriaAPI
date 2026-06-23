@@ -103,7 +103,7 @@ namespace AriaAPI.Networking.Helpers
                 };
 
                 var options = sp.GetRequiredService<IOptionsMonitor<FhirOptions>>().CurrentValue;
-                return new ClientConfigurator(system, fhirSettings, tokenProvider, logger, name, options.MaxConnectionsPerServer);
+                return new ClientConfigurator(system, fhirSettings, tokenProvider, logger, name, options.MaxConnectionsPerServer, options.CaptureRawBodies);
             });
 
             // 6) Register IFhirFactory -> FhirFactory as singleton

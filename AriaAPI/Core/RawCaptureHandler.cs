@@ -46,18 +46,14 @@ namespace AriaAPI.Core
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            // Capture request body (non-destructively).
+            // Capture request body (non-destructively). Buffer the content so it can be read here
+            // AND re-read by downstream handlers without mutating it — this preserves the original
+            // Content-Type/charset headers and exact bytes (binary payloads are not corrupted).
             string? reqBody = null;
             if (request.Content is not null)
             {
-                // Buffer original content into string.
+                await request.Content.LoadIntoBufferAsync().ConfigureAwait(false);
                 reqBody = await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-
-                // Rebuild content so downstream can still send it.
-                var clone = new StringContent(reqBody);
-                foreach (var h in request.Content.Headers)
-                    clone.Headers.TryAddWithoutValidation(h.Key, h.Value);
-                request.Content = clone;
             }
 
             CurrentCapture.LastRequestBody = reqBody;
@@ -66,17 +62,13 @@ namespace AriaAPI.Core
             // Send
             var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
 
-            // Capture response body (non-destructively).
+            // Capture response body (non-destructively) via the same buffer-then-read approach,
+            // leaving the response Content (and its headers) intact for the FHIR deserializer.
             string? respBody = null;
             if (response.Content is not null)
             {
+                await response.Content.LoadIntoBufferAsync().ConfigureAwait(false);
                 respBody = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-
-                // Put back a readable content for downstream consumers.
-                var clone = new StringContent(respBody);
-                foreach (var h in response.Content.Headers)
-                    clone.Headers.TryAddWithoutValidation(h.Key, h.Value);
-                response.Content = clone;
             }
 
             CurrentCapture.LastResponseBody = respBody;

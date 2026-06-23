@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **License changed from GPL v3 to AGPL v3** — `PackageLicenseExpression` updated to `AGPL-3.0-only`; `LICENSE.txt` replaced with AGPL v3 text
 
 ### Added
+- **`FhirOptions.CaptureRawBodies` option** — opt-in (default `false`) flag, bindable from `appsettings.json`/user secrets, that inserts `RawCaptureHandler` into the HTTP pipeline to capture raw request/response bodies (e.g., the FHIR bundle JSON). When enabled, the most recent bodies are exposed to consumers via `ClientConfigurator.LastRawRequestBody`/`LastRawResponseBody` and the `OnRawRequestCaptured`/`OnRawResponseCaptured` events. Captured bodies are unmasked PHI and are never written to the library's logs — consumers must route them only to PHI-safe destinations
 - **XML documentation on all public API surface** — every public type and member now has `/// <summary>` XML doc comments; build produces zero missing-doc warnings
 - **Security hardening** — PHI-safe logging via `PhiMask.Mask()` for all identifiers; token error messages scrubbed of secrets; path traversal guard on SQL file reads; recursion depth limit on fan-out search; HTTP connection pool limits on `SocketsHttpHandler`
 

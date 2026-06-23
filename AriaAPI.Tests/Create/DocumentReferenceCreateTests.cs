@@ -375,5 +375,71 @@ namespace AriaAPI.Tests.Create
         {
             Assert.Equal(CompositionStatus.Final, DocumentReferenceCreate.ParseDocStatus(null));
         }
+
+        // ── EnsureValidReferenceFormat ─────────────────────────────────────────
+
+        [Theory]
+        [InlineData("Patient/123")]                       // relative
+        [InlineData("http://host/fhir/Patient/1")]        // absolute URL
+        [InlineData("urn:uuid:7d1c4f5e-0000-0000-0000-000000000000")] // urn
+        [InlineData("#contained-id")]                     // contained
+        [InlineData(null)]                                // optional / absent
+        [InlineData("   ")]                               // whitespace treated as absent
+        public void EnsureValidReferenceFormat_ValidFhirReferences_DoNotThrow(string? reference)
+        {
+            DocumentReferenceCreate.EnsureValidReferenceFormat(reference, "PatientReference");
+        }
+
+        [Theory]
+        [InlineData("NoSlashHere")]
+        [InlineData("Practitioner/")]   // empty id
+        [InlineData("/123")]            // empty resource type
+        public void EnsureValidReferenceFormat_MalformedRelativeReferences_Throw(string reference)
+        {
+            var ex = Assert.Throws<ArgumentException>(
+                () => DocumentReferenceCreate.EnsureValidReferenceFormat(reference, "PatientReference"));
+            Assert.Contains("PatientReference", ex.Message);
+        }
+
+        // ── GetResolverOrganizationReference ───────────────────────────────────
+
+        [Fact]
+        public void GetResolverOrganizationReference_BlankPrimary_FallsBackToCustodian()
+        {
+            // A whitespace primary must not defeat the fallback chain.
+            var p = new DocumentReferenceCreate.DocumentReferenceCreateParams
+            {
+                DocumentTypeResolverOrganizationReference = "   ",
+                CustodianReference = "Organization/5"
+            };
+
+            Assert.Equal("Organization/5", DocumentReferenceCreate.GetResolverOrganizationReference(p));
+        }
+
+        [Theory]
+        [InlineData("Organization//5")]   // empty middle segment
+        [InlineData("Organization/")]     // empty id
+        [InlineData("Organization/5/_history/2")] // not the relative Id form
+        public void GetResolverOrganizationReference_MalformedOrganization_Throws(string reference)
+        {
+            var p = new DocumentReferenceCreate.DocumentReferenceCreateParams
+            {
+                DocumentTypeResolverOrganizationReference = reference
+            };
+
+            Assert.Throws<ArgumentException>(
+                () => DocumentReferenceCreate.GetResolverOrganizationReference(p));
+        }
+
+        [Fact]
+        public void GetResolverOrganizationReference_ValidOrganization_Returned()
+        {
+            var p = new DocumentReferenceCreate.DocumentReferenceCreateParams
+            {
+                DocumentTypeResolverOrganizationReference = "Organization/RadOnc-1"
+            };
+
+            Assert.Equal("Organization/RadOnc-1", DocumentReferenceCreate.GetResolverOrganizationReference(p));
+        }
     }
 }
