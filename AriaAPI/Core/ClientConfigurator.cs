@@ -257,46 +257,17 @@ namespace AriaAPI.Core
 
                 try
                 {
-                    // Build handler chain from inner → outer
-
-                    var sockets = BuildSocketsHandler();
-                    var http2 = new Http2NegotiationHandler(sockets, _baseUrl); // or new Http2NegotiationHandler(sockets, _baseUrl);
-                    var defaults = new DefaultQueryParamsHandler(http2);
-                    _currencyHandler ??= new CurrencySanitizerHandler(defaults);
-                    var logging = new LoggingTimingHandler(_currencyHandler, _logger);
-
-                    _authHandler ??= new BearerTokenHandler(_tokenProvider, _scope, _maxConnectionsPerServer);
-
-                    // Optionally insert the raw-body capture handler just below the auth handler so it
-                    // observes the request as Firely serialized it and the response as delivered.
-                    if (_captureRawBodies)
+                    // Build the long-lived delegating-handler chain exactly once. A DelegatingHandler
+                    // rejects InnerHandler reassignment after it has sent its first request
+                    // (InvalidOperationException), so the chain must not be re-linked on subsequent
+                    // CreateClient() calls (e.g. via Reconfigure). The transport handlers are
+                    // host-agnostic (the SocketsHttpHandler is host-independent and
+                    // Http2NegotiationHandler only inspects the URI scheme), and the new base URL is
+                    // applied through the recreated FhirClient below, so reusing the chain is safe.
+                    if (_retryHandler is null)
                     {
-                        if (_rawCaptureHandler is null)
-                        {
-                            _rawCaptureHandler = new RawCaptureHandler();
-                            _rawCaptureHandler.OnRequestCaptured += (_, e) =>
-                            {
-                                lock (_rawCaptureLock) { _lastRawRequestBody = e.RequestBody; }
-                                OnRawRequestCaptured?.Invoke(this, e);
-                            };
-                            _rawCaptureHandler.OnResponseCaptured += (_, e) =>
-                            {
-                                lock (_rawCaptureLock) { _lastRawResponseBody = e.ResponseBody; }
-                                OnRawResponseCaptured?.Invoke(this, e);
-                            };
-                            _logger.LogInformation(
-                                "Raw HTTP body capture is ENABLED for {BaseUrl}. Captured bodies may contain PHI; " +
-                                "ensure they are only routed to PHI-safe destinations.", _baseUrl);
-                        }
-                        _rawCaptureHandler.InnerHandler = logging;
-                        _authHandler.InnerHandler = _rawCaptureHandler;
+                        BuildHandlerChain();
                     }
-                    else
-                    {
-                        _authHandler.InnerHandler = logging;
-                    }
-
-                    _retryHandler ??= new TransientFaultRetryHandler(_authHandler, _logger);
 
                     // Dispose any existing client
                     _fhirClient?.Dispose();
@@ -314,6 +285,49 @@ namespace AriaAPI.Core
                     throw;
                 }
             }
+        }
+
+        /// <summary>
+        /// Assembles the long-lived delegating-handler chain (inner → outer) once and stores the
+        /// outermost handler in <see cref="_retryHandler"/>. Must be called under <see cref="_syncRoot"/>
+        /// and only when the chain has not yet been built.
+        /// </summary>
+        private void BuildHandlerChain()
+        {
+            var sockets = BuildSocketsHandler();
+            var http2 = new Http2NegotiationHandler(sockets, _baseUrl);
+            var defaults = new DefaultQueryParamsHandler(http2);
+            _currencyHandler = new CurrencySanitizerHandler(defaults);
+
+            HttpMessageHandler inner = new LoggingTimingHandler(_currencyHandler, _logger);
+
+            // Optionally insert the raw-body capture handler just below the auth handler so it
+            // observes the request as Firely serialized it and the response as delivered.
+            if (_captureRawBodies)
+            {
+                _rawCaptureHandler = new RawCaptureHandler();
+                _rawCaptureHandler.OnRequestCaptured += (_, e) =>
+                {
+                    lock (_rawCaptureLock) { _lastRawRequestBody = e.RequestBody; }
+                    OnRawRequestCaptured?.Invoke(this, e);
+                };
+                _rawCaptureHandler.OnResponseCaptured += (_, e) =>
+                {
+                    lock (_rawCaptureLock) { _lastRawResponseBody = e.ResponseBody; }
+                    OnRawResponseCaptured?.Invoke(this, e);
+                };
+                _rawCaptureHandler.InnerHandler = inner;
+                inner = _rawCaptureHandler;
+
+                _logger.LogInformation(
+                    "Raw HTTP body capture is ENABLED for {BaseUrl}. Captured bodies may contain PHI; " +
+                    "ensure they are only routed to PHI-safe destinations.", _baseUrl);
+            }
+
+            _authHandler = new BearerTokenHandler(_tokenProvider, _scope, _maxConnectionsPerServer);
+            _authHandler.InnerHandler = inner;
+
+            _retryHandler = new TransientFaultRetryHandler(_authHandler, _logger);
         }
 
 

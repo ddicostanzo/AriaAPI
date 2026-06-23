@@ -511,13 +511,21 @@ namespace AriaAPI.API.DocumentReferenceCreate
         }
 
         /// <summary>
-        /// Validates that an optional FHIR reference, when provided, is in "ResourceType/Id" form
-        /// (both the resource type and the id must be non-empty). No-op when the reference is null
-        /// or whitespace (the reference is optional).
+        /// Validates that an optional FHIR reference, when provided, is a well-formed FHIR reference.
+        /// Accepts the relative "ResourceType/Id" form (both segments non-empty), a contained
+        /// reference ("#id"), a urn ("urn:uuid:...", "urn:oid:..."), or an absolute URL. No-op when
+        /// the reference is null or whitespace (the reference is optional).
         /// </summary>
-        private static void EnsureValidReferenceFormat(string? reference, string referenceName)
+        internal static void EnsureValidReferenceFormat(string? reference, string referenceName)
         {
             if (string.IsNullOrWhiteSpace(reference))
+                return;
+
+            // Contained, urn, and absolute-URL references are all valid FHIR reference forms; only
+            // the relative "ResourceType/Id" form needs structural validation here.
+            if (reference.StartsWith("#", StringComparison.Ordinal) ||
+                reference.StartsWith("urn:", StringComparison.OrdinalIgnoreCase) ||
+                Uri.IsWellFormedUriString(reference, UriKind.Absolute))
                 return;
 
             var parts = reference.Split('/');
@@ -525,11 +533,12 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 string.IsNullOrWhiteSpace(parts[0]) ||
                 string.IsNullOrWhiteSpace(parts[1]))
                 throw new ArgumentException(
-                    $"{referenceName} must be in 'ResourceType/Id' format, got: \"{reference}\".",
+                    $"{referenceName} must be a valid FHIR reference (e.g. 'ResourceType/Id', " +
+                    $"an absolute URL, or 'urn:uuid:...'), got: \"{reference}\".",
                     "p");
         }
 
-        private static string ExtractId(string reference)
+        internal static string ExtractId(string reference)
         {
             var parts = reference.Split('/');
             if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
@@ -561,12 +570,15 @@ namespace AriaAPI.API.DocumentReferenceCreate
             };
 
 
-        private static string GetResolverOrganizationReference(DocumentReferenceCreateParams p)
+        internal static string GetResolverOrganizationReference(DocumentReferenceCreateParams p)
         {
+            // Coalesce on non-blank (not just non-null): an empty/whitespace
+            // DocumentTypeResolverOrganizationReference must still fall back to the next candidate.
             var resolverRef =
-                p.DocumentTypeResolverOrganizationReference ??
-                p.CustodianReference ??
-                p.InstitutionReference;
+                FirstNonBlank(
+                    p.DocumentTypeResolverOrganizationReference,
+                    p.CustodianReference,
+                    p.InstitutionReference);
 
             if (string.IsNullOrWhiteSpace(resolverRef))
                 throw new ArgumentException(
@@ -578,7 +590,26 @@ namespace AriaAPI.API.DocumentReferenceCreate
                     $"Document type resolver must be an Organization reference, got: {resolverRef}",
                     nameof(p));
 
+            // Must be the relative "Organization/Id" form so the publisher id can be extracted;
+            // reject malformed values (e.g. "Organization/", "Organization//5") with a clear message.
+            var parts = resolverRef.Split('/');
+            if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[1]))
+                throw new ArgumentException(
+                    $"Document type resolver must be in 'Organization/Id' form, got: {resolverRef}",
+                    nameof(p));
+
             return resolverRef;
+        }
+
+        /// <summary>Returns the first argument that is not null, empty, or whitespace; otherwise null.</summary>
+        private static string? FirstNonBlank(params string?[] values)
+        {
+            foreach (var v in values)
+            {
+                if (!string.IsNullOrWhiteSpace(v))
+                    return v;
+            }
+            return null;
         }
     }
 }

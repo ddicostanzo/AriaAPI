@@ -86,5 +86,39 @@ namespace AriaAPI.Tests.Core
 
             mock.VerifyNoOutstandingExpectation();
         }
+
+        [Fact]
+        public async Task SendAsync_PreservesResponseContentType()
+        {
+            // Capture must not rewrite the response Content-Type (regression: rebuilding as
+            // StringContent reset it to text/plain, breaking the FHIR deserializer).
+            var handler = new RawCaptureHandler();
+            using var client = BuildClient(handler, mediaType: "application/fhir+json");
+
+            var response = await client.GetAsync(TestUrl);
+
+            Assert.Equal("application/fhir+json", response.Content.Headers.ContentType?.MediaType);
+        }
+
+        [Fact]
+        public async Task SendAsync_DoesNotCorruptBinaryResponseBody()
+        {
+            // Bytes that are not valid UTF-8 must survive the handler unchanged (regression:
+            // round-tripping through a UTF-8 string replaced invalid sequences with U+FFFD).
+            var payload = new byte[] { 0xFF, 0xFE, 0x00, 0x01, 0x80, 0x7F };
+            var mock = new MockHttpMessageHandler();
+            mock.When(TestUrl).Respond(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(payload)
+            });
+
+            var handler = new RawCaptureHandler { InnerHandler = mock };
+            using var client = new HttpClient(handler);
+
+            var response = await client.GetAsync(TestUrl);
+            var roundTripped = await response.Content.ReadAsByteArrayAsync();
+
+            Assert.Equal(payload, roundTripped);
+        }
     }
 }
