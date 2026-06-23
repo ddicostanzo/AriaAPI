@@ -94,6 +94,7 @@ With [User Secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-s
 {
   "FhirOptions": {
     "ActiveSystem": "Production",
+    "CaptureRawBodies": false,
     "Systems": {
       "Production": {
         "BaseUrl": "https://your-fhir-server/fhir",
@@ -108,6 +109,27 @@ With [User Secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-s
   }
 }
 ```
+
+### Raw body capture (diagnostics)
+
+Set `FhirOptions.CaptureRawBodies` to `true` to capture the raw HTTP request/response bodies — including the
+serialized FHIR bundle JSON — for diagnostics. When enabled, the most recent bodies are exposed on
+`ClientConfigurator`:
+
+```csharp
+// One-off, after a call:
+var bundleJson = configurator.LastRawResponseBody;
+
+// Or subscribe for every request/response (fires synchronously at capture time):
+configurator.OnRawResponseCaptured += (_, e) =>
+{
+    // e.ResponseBody is the raw FHIR bundle JSON. Route to a PHI-safe sink only.
+};
+```
+
+> ⚠️ **HIPAA:** captured bodies contain **unmasked PHI**. They are never written to the library's logs. Do not
+> write them to plain-text logs or any non-PHI-safe destination, and leave `CaptureRawBodies` disabled in
+> production unless you have a compliant destination for the data.
 
 ---
 

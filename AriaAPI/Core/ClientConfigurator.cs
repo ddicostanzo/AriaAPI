@@ -41,6 +41,7 @@ namespace AriaAPI.Core
         private readonly FhirClientSettings _settings;
         private readonly TokenProvider _tokenProvider;
         private readonly int _maxConnectionsPerServer;
+        private readonly bool _captureRawBodies;
 
         private Uri _baseUrl;
         private string _scope;
@@ -50,8 +51,87 @@ namespace AriaAPI.Core
         private BearerTokenHandler? _authHandler;
         private TransientFaultRetryHandler? _retryHandler;
         private CurrencySanitizerHandler? _currencyHandler;
+        private RawCaptureHandler? _rawCaptureHandler;
         private FhirClient? _fhirClient;
         private bool _disposed;
+
+        private readonly object _rawCaptureLock = new();
+        private string? _lastRawRequestBody;
+        private string? _lastRawResponseBody;
+
+        /// <summary>
+        /// Raised after the raw body of an outgoing HTTP request has been captured.
+        /// Only fires when raw body capture is enabled (see <see cref="FhirOptions.CaptureRawBodies"/>).
+        /// </summary>
+        /// <remarks>
+        /// <b>HIPAA warning:</b> the captured body may contain unmasked PHI (e.g., a FHIR bundle).
+        /// Do not write it to plain-text logs or any non-PHI-safe sink.
+        /// </remarks>
+        public event EventHandler<(HttpRequestMessage Request, string? RequestBody)>? OnRawRequestCaptured;
+
+        /// <summary>
+        /// Raised after the raw body of an incoming HTTP response has been captured.
+        /// Only fires when raw body capture is enabled (see <see cref="FhirOptions.CaptureRawBodies"/>).
+        /// </summary>
+        /// <remarks>
+        /// <b>HIPAA warning:</b> the captured body may contain unmasked PHI (e.g., a FHIR bundle).
+        /// Do not write it to plain-text logs or any non-PHI-safe sink.
+        /// </remarks>
+        public event EventHandler<(HttpResponseMessage Response, string? ResponseBody)>? OnRawResponseCaptured;
+
+        /// <summary>
+        /// Gets a value indicating whether raw HTTP body capture is enabled for this configurator.
+        /// </summary>
+        public bool RawBodyCaptureEnabled => _captureRawBodies;
+
+        /// <summary>
+        /// Gets the raw body of the most recently captured outgoing HTTP request,
+        /// or <see langword="null"/> if capture is disabled or no request has been sent yet.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Reflects the last request observed across <i>all</i> concurrent async flows on this (typically
+        /// singleton) configurator. For request-scoped correlation, subscribe to <see cref="OnRawRequestCaptured"/>
+        /// instead, which fires synchronously at capture time.
+        /// </para>
+        /// <para><b>HIPAA warning:</b> the returned body may contain unmasked PHI. Treat it as sensitive.</para>
+        /// </remarks>
+        public string? LastRawRequestBody
+        {
+            get { lock (_rawCaptureLock) { return _lastRawRequestBody; } }
+        }
+
+        /// <summary>
+        /// Gets the raw body of the most recently captured incoming HTTP response
+        /// (e.g., the serialized FHIR bundle JSON), or <see langword="null"/> if capture is disabled
+        /// or no response has been received yet.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Reflects the last response observed across <i>all</i> concurrent async flows on this (typically
+        /// singleton) configurator. For request-scoped correlation, subscribe to <see cref="OnRawResponseCaptured"/>
+        /// instead, which fires synchronously at capture time.
+        /// </para>
+        /// <para><b>HIPAA warning:</b> the returned body may contain unmasked PHI. Treat it as sensitive.</para>
+        /// </remarks>
+        public string? LastRawResponseBody
+        {
+            get { lock (_rawCaptureLock) { return _lastRawResponseBody; } }
+        }
+
+        /// <summary>
+        /// Clears the cached most-recent raw request and response bodies, releasing the associated memory.
+        /// No-op when capture is disabled.
+        /// </summary>
+        public void ClearRawCapture()
+        {
+            lock (_rawCaptureLock)
+            {
+                _lastRawRequestBody = null;
+                _lastRawResponseBody = null;
+            }
+            RawCaptureHandler.Clear();
+        }
 
         /// <summary>
         /// Gets the configured <see cref="FhirClient"/>.
@@ -87,6 +167,13 @@ namespace AriaAPI.Core
         /// <param name="maxConnectionsPerServer">
         /// Maximum number of concurrent HTTP connections per FHIR server. Defaults to 50.
         /// </param>
+        /// <param name="captureRawBodies">
+        /// When <see langword="true"/>, inserts a raw-body capture handler into the HTTP pipeline so the most
+        /// recent request/response bodies (e.g., the FHIR bundle JSON) are exposed via
+        /// <see cref="LastRawRequestBody"/>, <see cref="LastRawResponseBody"/>, and the raw-capture events.
+        /// Defaults to <see langword="false"/>. <b>HIPAA warning:</b> captured bodies are not masked and may
+        /// contain PHI.
+        /// </param>
         /// <exception cref="ArgumentNullException">Thrown if any required argument is null.</exception>
         /// <exception cref="InvalidOperationException">Thrown if required system options are missing or invalid.</exception>
         public ClientConfigurator(
@@ -95,12 +182,14 @@ namespace AriaAPI.Core
             TokenProvider tokenProvider,
             ILogger<ClientConfigurator> logger,
             string? systemName = null,
-            int maxConnectionsPerServer = 50)
+            int maxConnectionsPerServer = 50,
+            bool captureRawBodies = false)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             _tokenProvider = tokenProvider ?? throw new ArgumentNullException(nameof(tokenProvider));
             _maxConnectionsPerServer = maxConnectionsPerServer;
+            _captureRawBodies = captureRawBodies;
 
             if (system is null) throw new ArgumentNullException(nameof(system));
             if (string.IsNullOrWhiteSpace(system.BaseUrl))
@@ -175,9 +264,37 @@ namespace AriaAPI.Core
                     var defaults = new DefaultQueryParamsHandler(http2);
                     _currencyHandler ??= new CurrencySanitizerHandler(defaults);
                     var logging = new LoggingTimingHandler(_currencyHandler, _logger);
-                    
+
                     _authHandler ??= new BearerTokenHandler(_tokenProvider, _scope, _maxConnectionsPerServer);
-                    _authHandler.InnerHandler = logging;
+
+                    // Optionally insert the raw-body capture handler just below the auth handler so it
+                    // observes the request as Firely serialized it and the response as delivered.
+                    if (_captureRawBodies)
+                    {
+                        if (_rawCaptureHandler is null)
+                        {
+                            _rawCaptureHandler = new RawCaptureHandler();
+                            _rawCaptureHandler.OnRequestCaptured += (_, e) =>
+                            {
+                                lock (_rawCaptureLock) { _lastRawRequestBody = e.RequestBody; }
+                                OnRawRequestCaptured?.Invoke(this, e);
+                            };
+                            _rawCaptureHandler.OnResponseCaptured += (_, e) =>
+                            {
+                                lock (_rawCaptureLock) { _lastRawResponseBody = e.ResponseBody; }
+                                OnRawResponseCaptured?.Invoke(this, e);
+                            };
+                            _logger.LogInformation(
+                                "Raw HTTP body capture is ENABLED for {BaseUrl}. Captured bodies may contain PHI; " +
+                                "ensure they are only routed to PHI-safe destinations.", _baseUrl);
+                        }
+                        _rawCaptureHandler.InnerHandler = logging;
+                        _authHandler.InnerHandler = _rawCaptureHandler;
+                    }
+                    else
+                    {
+                        _authHandler.InnerHandler = logging;
+                    }
 
                     _retryHandler ??= new TransientFaultRetryHandler(_authHandler, _logger);
 
