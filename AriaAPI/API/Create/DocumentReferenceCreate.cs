@@ -5,13 +5,13 @@ using System.IO;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using AriaAPI.API.Create;
 using AriaAPI.API.IdentityResolvers;
-using AriaAPI.API.SearchHelpers;
 using AriaAPI.Core;
 using Hl7.Fhir.Model;
 using Hl7.Fhir.Serialization;
 using Microsoft.Extensions.Logging;
+using static AriaAPI.API.Create.CreateHelpers;
+using static AriaAPI.API.SearchHelpers.SearchTypes;
 using CodeableConcept = Hl7.Fhir.Model.CodeableConcept;
 
 namespace AriaAPI.API.DocumentReferenceCreate
@@ -22,182 +22,172 @@ namespace AriaAPI.API.DocumentReferenceCreate
     public static class DocumentReferenceCreate
     {
         /// <summary>
+        /// Default maximum file size in bytes (10 MB).
+        /// </summary>
+        public const long DefaultMaxFileSizeBytes = 10L * 1024 * 1024;
+
+        /// <summary>
+        /// Lazily-built, pretty-printing FHIR serializer options for verification logging.
+        /// Built once on first use and reused; deferring construction keeps the cost (and any
+        /// initialization failure) scoped to the opt-in logging path. <see cref="JsonSerializerOptions"/>
+        /// is thread-safe after first use.
+        /// </summary>
+        private static readonly Lazy<JsonSerializerOptions> _verificationJsonOptions =
+            new(() => new JsonSerializerOptions { WriteIndented = true }.ForFhir(ModelInfo.ModelInspector));
+
+        /// <summary>
         /// Parameters required to create a DocumentReference with an embedded Attachment.
         /// </summary>
         public sealed class DocumentReferenceCreateParams
         {
-            /// <summary>FHIR reference to patient (e.g., "Patient/123").</summary>
+            /// <summary>FHIR reference to the patient, e.g., "Patient/123". If not set, the create will proceed without subject.</summary>
             public string? PatientReference { get; init; }
 
-            /// <summary>Optional display for patient.</summary>
-            public string? PatientDisplay { get; init; }
-
-            /// <summary>FHIR reference to author.</summary>
+            /// <summary>FHIR reference to the author, e.g., "Practitioner/456". Optional.</summary>
             public string? AuthorReference { get; init; }
 
-            /// <summary>Optional display for author.</summary>
-            public string? AuthorDisplay { get; init; }
-
-            /// <summary>FHIR reference to authenticator (preferred Practitioner).</summary>
+            /// <summary>FHIR reference to the authenticator, e.g., "Organization/RadOnc-1". Optional.</summary>
             public string? AuthenticatorReference { get; init; }
 
-            /// <summary>Optional display for authenticator.</summary>
-            public string? AuthenticatorDisplay { get; init; }
-
-            /// <summary>FHIR reference to custodian organization.</summary>
+            /// <summary>FHIR reference to the custodian organization (DocumentReference.custodian). Optional.</summary>
             public string? CustodianReference { get; init; }
 
-            /// <summary>Optional display for custodian.</summary>
+            /// <summary>Optional display for the custodian reference.</summary>
             public string? CustodianDisplay { get; init; }
 
-            /// <summary>Organization used for document type resolution.</summary>
-            public string? DocumentTypeResolverOrganizationReference { get; init; }
-
-            /// <summary>DocumentReference.status.</summary>
+            /// <summary>DocumentReference.status: "current" | "entered-in-error" | "superseded". Defaults to "current".</summary>
             public string Status { get; init; } = "current";
 
-            /// <summary>DocumentReference.docStatus.</summary>
+            /// <summary>docStatus: "preliminary" | "final" | "entered-in-error" | "amended".</summary>
             public string? DocStatus { get; init; } = "final";
 
-            /// <summary>Document type enum.</summary>
-            public SearchTypes.DocumentType? Type { get; init; }
+            /// <summary>Document type (domain enum). Will be mapped to a CodeableConcept.</summary>
+            public DocumentType? Type { get; init; }
 
-            /// <summary>Document creation date.</summary>
+            /// <summary>Date/time the document was created (DocumentReference.date).</summary>
             public DateTime? Date { get; init; }
 
-            /// <summary>Document description.</summary>
+            /// <summary>Human-readable description (DocumentReference.description). Optional.</summary>
             public string? Description { get; init; }
 
-            /// <summary>Optional identifiers.</summary>
+            /// <summary>Optional identifiers attached to DocumentReference.identifier.</summary>
             public List<string>? Identifiers { get; init; }
 
-            /// <summary>Attachment title.</summary>
+            /// <summary>Attachment title (usually file name).</summary>
             public string? Title { get; init; }
 
-            /// <summary>File path to embed.</summary>
-            public string SourceFilePath { get; init; } = string.Empty;
+            /// <summary>Absolute file path to the artifact to embed as Attachment.data.</summary>
+            public string SourceFilePath { get; init; } = default!;
 
-            /// <summary>Attachment creation timestamp.</summary>
+            /// <summary>Creation timestamp for the attachment.</summary>
             public DateTime? Creation { get; init; }
 
-            /// <summary>Document categories.</summary>
-            public List<CodeableConcept> Category { get; init; } =
-                new()
-                {
-                    new CodeableConcept
-                    {
-                        Coding =
-                        {
-                            new Coding(
-                                "http://varian.com/fhir/CodeSystem/DocumentReference/documentreference-class",
-                                "Patient Document",
-                                "Patient Document")
-                        }
-                    }
-                };
+            /// <summary>Category classification for the document reference. Defaults to "Patient Document".</summary>
+            public List<CodeableConcept> Category { get; init; } = new List<CodeableConcept>()
+                                                                        { new CodeableConcept()
+                                                                            { Coding = {
+                                                                              new Coding("http://varian.com/fhir/CodeSystem/DocumentReference/documentreference-class",
+                                                                              "Patient Document",
+                                                                              "Patient Document") } } };
 
-            /// <summary>Supervisor reference (Varian extension).</summary>
+            // ── Varian extension values (opt-in via the Include*Extension flags below) ──
+
+            /// <summary>Supervisor reference (Varian extension). Used when <see cref="IncludeSupervisorExtension"/> is set.</summary>
             public string? SupervisorReference { get; init; }
 
-            /// <summary>Supervisor display.</summary>
+            /// <summary>Optional display for the supervisor reference.</summary>
             public string? SupervisorDisplay { get; init; }
 
-            /// <summary>Authenticated timestamp (Varian extension).</summary>
+            /// <summary>Authenticated timestamp (Varian extension). Used when <see cref="IncludeAuthenticatedDateExtension"/> is set.</summary>
             public DateTime? AuthenticatedDate { get; init; }
 
-            /// <summary>Template name (Varian extension).</summary>
+            /// <summary>Template name (Varian extension). Used when <see cref="IncludeTemplateNameExtension"/> is set.</summary>
             public string? TemplateName { get; init; }
 
-            /// <summary>Institution reference (Varian extension).</summary>
+            /// <summary>Login-institution reference (Varian extension). Used when <see cref="IncludeLoginInstitutionExtension"/> is set.</summary>
             public string? InstitutionReference { get; init; }
 
-            /// <summary>Institution display.</summary>
+            /// <summary>Optional display for the login-institution reference.</summary>
             public string? InstitutionDisplay { get; init; }
 
-            /// <summary>Document storage location (Varian extension).</summary>
+            /// <summary>Document storage location (Varian extension). Used when <see cref="IncludeDocumentLocationExtension"/> is set.</summary>
             public string? DocumentLocation { get; init; }
 
-
             /// <summary>
-            /// Enables Varian supervisor extension.
-            /// Default false so package consumers can opt in after validation.
+            /// Enables the Varian supervisor extension.
+            /// Default <see langword="false"/> so package consumers can opt in after validating that
+            /// the extension does not interfere with Aria document ingestion.
             /// </summary>
             public bool IncludeSupervisorExtension { get; init; } = false;
 
             /// <summary>
-            /// Enables Varian authenticated timestamp extension.
-            /// Default false so package consumers can opt in after validation.
+            /// Enables the Varian authenticated-timestamp extension.
+            /// Default <see langword="false"/> so package consumers can opt in after validation.
             /// </summary>
             public bool IncludeAuthenticatedDateExtension { get; init; } = false;
 
             /// <summary>
-            /// Enables Varian template name extension.
-            /// Default false so package consumers can opt in after validation.
+            /// Enables the Varian template-name extension.
+            /// Default <see langword="false"/> so package consumers can opt in after validation.
             /// </summary>
             public bool IncludeTemplateNameExtension { get; init; } = false;
 
             /// <summary>
-            /// Enables Varian login institution extension.
-            /// Default false so package consumers can opt in after validation.
+            /// Enables the Varian login-institution extension.
+            /// Default <see langword="false"/> so package consumers can opt in after validation.
             /// </summary>
             public bool IncludeLoginInstitutionExtension { get; init; } = false;
 
             /// <summary>
-            /// Enables Varian document location extension.
-            /// Default false so package consumers can opt in after validation.
+            /// Enables the Varian document-location extension.
+            /// Default <see langword="false"/> so package consumers can opt in after validation.
             /// </summary>
             public bool IncludeDocumentLocationExtension { get; init; } = false;
 
             /// <summary>
-            /// Convenience flag to enable all currently supported Varian extensions.
-            /// Individual flags are still checked with their corresponding values.
+            /// Convenience flag to enable all currently supported Varian extensions whose values are
+            /// present. Unlike the individual flags, this is best-effort: extensions whose values are
+            /// missing are skipped rather than throwing.
             /// </summary>
             public bool IncludeAllVarianExtensions { get; init; } = false;
 
             /// <summary>
-            /// When <see langword="true"/>, the created DocumentReference is serialized to FHIR
-            /// JSON and written to the logger at <see cref="LogLevel.Debug"/> so the resource can
-            /// be verified against the vendor's Aria tooling.
-            /// <para>
-            /// <b>PHI warning:</b> the serialized resource contains Protected Health Information
-            /// (patient/practitioner references, identifiers, and — when
-            /// <see cref="IncludeAttachmentDataInJsonLog"/> is set — the full document bytes).
-            /// Enable only in controlled environments and route Debug logs to a secure sink.
-            /// Defaults to <see langword="false"/>.
-            /// </para>
+            /// When <see langword="true"/>, the created DocumentReference is serialized to FHIR JSON
+            /// and written to the logger at <see cref="LogLevel.Debug"/> so the resource can be
+            /// verified against the vendor's Aria tooling.
+            /// <para><b>PHI warning:</b> the serialized resource contains Protected Health Information
+            /// (references, identifiers, and — when <see cref="IncludeAttachmentDataInJsonLog"/> is
+            /// set — the full document bytes). Enable only in controlled environments and route Debug
+            /// logs to a secure sink. Defaults to <see langword="false"/>.</para>
             /// </summary>
             public bool LogResourceJson { get; init; } = false;
 
             /// <summary>
             /// Controls whether the base64 <c>Attachment.data</c> payload is included when
             /// <see cref="LogResourceJson"/> serializes the resource. When <see langword="false"/>
-            /// (the default) the data is redacted with a placeholder noting its size, keeping the
-            /// log small while preserving the resource structure (type, category, identifiers, and
-            /// Varian extensions) for verification.
-            /// <para><b>PHI warning:</b> setting this to <see langword="true"/> writes the full
-            /// document contents to the log in plain text.</para>
+            /// (the default) the data is redacted with a size placeholder, keeping the log small while
+            /// preserving the resource structure (including Varian extensions) for verification.
+            /// <para><b>PHI warning:</b> setting this <see langword="true"/> writes the full document
+            /// contents to the log in plain text.</para>
             /// </summary>
             public bool IncludeAttachmentDataInJsonLog { get; init; } = false;
-
         }
 
-        /// <summary>Default max file size = 10 MB.</summary>
-        public const long DefaultMaxFileSizeBytes = 10485760L;
-
         /// <summary>
-        /// Lazily-built, pretty-printing FHIR serializer options for verification logging.
-        /// Building the FHIR converter stack is non-trivial, so the options are created once on
-        /// first use and reused; deferring construction keeps the cost (and any initialization
-        /// failure) scoped to the opt-in logging path rather than the type initializer.
-        /// <see cref="JsonSerializerOptions"/> is thread-safe after first use.
+        /// Reads the file at <see cref="DocumentReferenceCreateParams.SourceFilePath"/>,
+        /// builds a DocumentReference, and creates it on the FHIR server.
         /// </summary>
-        private static readonly Lazy<JsonSerializerOptions> _verificationJsonOptions =
-            new(() => new JsonSerializerOptions { WriteIndented = true }.ForFhir(ModelInfo.ModelInspector));
-
-
-        /// <summary>
-        /// Creates a DocumentReference from a file.
-        /// </summary>
+        /// <param name="configurator">FHIR client configurator.</param>
+        /// <param name="p">Parameters describing the document to create.</param>
+        /// <param name="logger">Logger instance.</param>
+        /// <param name="maxFileSizeBytes">
+        /// Maximum allowed file size in bytes. Files exceeding this limit cause an
+        /// <see cref="InvalidOperationException"/>. Defaults to <see cref="DefaultMaxFileSizeBytes"/> (10 MB).
+        /// </param>
+        /// <param name="ct">Cancellation token.</param>
+        /// <returns>The created <see cref="DocumentReference"/> resource.</returns>
+        /// <exception cref="FileNotFoundException">Thrown when <paramref name="p"/>.SourceFilePath does not exist.</exception>
+        /// <exception cref="InvalidOperationException">Thrown when the file exceeds <paramref name="maxFileSizeBytes"/>.</exception>
         public static async Task<DocumentReference> CreateFromFileAsync(
             ClientConfigurator configurator,
             DocumentReferenceCreateParams p,
@@ -205,100 +195,108 @@ namespace AriaAPI.API.DocumentReferenceCreate
             long maxFileSizeBytes = DefaultMaxFileSizeBytes,
             CancellationToken ct = default)
         {
-            ArgumentNullException.ThrowIfNull(configurator);
-            ArgumentNullException.ThrowIfNull(p);
-            ArgumentNullException.ThrowIfNull(logger);
+            if (configurator is null)
+                throw new ArgumentNullException(nameof(configurator));
+            if (p is null)
+                throw new ArgumentNullException(nameof(p));
 
             if (string.IsNullOrWhiteSpace(p.SourceFilePath))
                 throw new FileNotFoundException("SourceFilePath must be specified.", p.SourceFilePath);
 
-            string path = Path.GetFullPath(p.SourceFilePath);
+            var resolvedPath = Path.GetFullPath(p.SourceFilePath);
 
-            if (!File.Exists(path))
-                throw new FileNotFoundException($"File not found: {path}", path);
+            if (!File.Exists(resolvedPath))
+                throw new FileNotFoundException($"Source file not found at path: {resolvedPath}", resolvedPath);
 
-            FileInfo fi = new(path);
-
-            if (fi.Length > maxFileSizeBytes)
-                throw new InvalidOperationException($"File too large: {fi.Length}");
+            var fileInfo = new FileInfo(resolvedPath);
+            if (fileInfo.Length > maxFileSizeBytes)
+                throw new InvalidOperationException(
+                    $"File size ({fileInfo.Length:N0} bytes) exceeds the maximum allowed size ({maxFileSizeBytes:N0} bytes): {resolvedPath}");
 
             ct.ThrowIfCancellationRequested();
+
+            if (string.IsNullOrWhiteSpace(p.AuthenticatorReference))
+                throw new ArgumentException(
+                    "AuthenticatorReference is required to resolve document types (e.g., \"Organization/JamesRO\").",
+                    nameof(p));
+
+            var refParts = p.AuthenticatorReference.Split('/');
+            if (refParts.Length < 2 || string.IsNullOrWhiteSpace(refParts[1]))
+                throw new ArgumentException(
+                    $"AuthenticatorReference must be in 'ResourceType/Id' format (e.g., \"Organization/JamesRO\"), got: \"{p.AuthenticatorReference}\".",
+                    nameof(p));
 
             if (!p.Type.HasValue)
                 throw new ArgumentException("Document Type is required.", nameof(p));
 
-            // Caller-supplied references are optional, but when supplied each must be a well-formed
-            // "ResourceType/Id" reference so a malformed value never reaches the server. Validated
-            // here (before the resolver/network call) so the failure is fast and cheap.
-            EnsureValidReferenceFormat(
-                p.PatientReference, nameof(DocumentReferenceCreateParams.PatientReference));
-            EnsureValidReferenceFormat(
-                p.AuthorReference, nameof(DocumentReferenceCreateParams.AuthorReference));
-            EnsureValidReferenceFormat(
-                p.AuthenticatorReference, nameof(DocumentReferenceCreateParams.AuthenticatorReference));
-            EnsureValidReferenceFormat(
-                p.CustodianReference, nameof(DocumentReferenceCreateParams.CustodianReference));
-            EnsureValidReferenceFormat(
-                p.SupervisorReference, nameof(DocumentReferenceCreateParams.SupervisorReference));
-            EnsureValidReferenceFormat(
-                p.InstitutionReference, nameof(DocumentReferenceCreateParams.InstitutionReference));
-
-            string resolverRef = GetResolverOrganizationReference(p);
-            string resolverId = ExtractId(resolverRef);
-
-
             var service = await DocumentTypeConceptService.CreateAsync(
                     configurator,
-                    publisher: resolverId,
+                    publisher: refParts[1],
                     listReturnLimit: 250
                 ).ConfigureAwait(false);
 
-            var ccType = service.Resolve(p.Type.Value);
+            // Resolve from your enum
+            var ccType = service.Resolve(p.Type!.Value);
 
-            byte[] bytes = await File.ReadAllBytesAsync(path, ct);
-            string contentType = CreateHelpers.ContentTypeHelper.MapFromExtension(Path.GetExtension(path));
+            // 1) Package file as Attachment (base64)
+            var bytes = await File.ReadAllBytesAsync(resolvedPath, ct);
+            var contentType = ContentTypeHelper.MapFromExtension(Path.GetExtension(resolvedPath));
+            var title = string.IsNullOrWhiteSpace(p.Title) ? Path.GetFileName(resolvedPath) : p.Title;
 
             var attachment = new Attachment
             {
                 ContentType = contentType,
-                Title = p.Title ?? Path.GetFileName(path),
-                Data = bytes,
+                Title = title,
+                Data = bytes,                          // The SDK will base64 encode for wire format
                 Size = bytes.Length,
                 CreationElement = p.Creation.HasValue ? new FhirDateTime(p.Creation.Value) : null
             };
 
-            var doc = new DocumentReference
+            // 2) Build DocumentReference skeleton
+            var docRef = new DocumentReference
             {
-                Status = ParseStatus(p.Status),
+                Status = ParseDocRefStatus(p.Status),
                 DocStatus = ParseDocStatus(p.DocStatus),
                 DateElement = p.Date.HasValue ? new Instant(p.Date.Value) : null,
                 Type = ccType.ToFhirCodeableConcept(),
                 Description = p.Description,
                 Content = new List<DocumentReference.ContentComponent>
                 {
-                    new() { Attachment = attachment }
+                    new DocumentReference.ContentComponent { Attachment = attachment }
                 },
-                Category = p.Category
+                Category = p.Category,
             };
 
+            // 3) Subject (Patient), Author, Authenticator
             if (!string.IsNullOrWhiteSpace(p.PatientReference))
-                doc.Subject = CreateRef(p.PatientReference, p.PatientDisplay);
-
-            AddAuthor(doc, p);
-
+                docRef.Subject = new ResourceReference(p.PatientReference);
+            if (!string.IsNullOrWhiteSpace(p.AuthorReference))
+                docRef.Author = new List<ResourceReference> { new ResourceReference(p.AuthorReference) };
             if (!string.IsNullOrWhiteSpace(p.AuthenticatorReference))
-                doc.Authenticator = CreateRef(p.AuthenticatorReference, p.AuthenticatorDisplay);
-
+                docRef.Authenticator = new ResourceReference(p.AuthenticatorReference);
             if (!string.IsNullOrWhiteSpace(p.CustodianReference))
-                doc.Custodian = CreateRef(p.CustodianReference, p.CustodianDisplay);
+                docRef.Custodian = CreateRef(p.CustodianReference, p.CustodianDisplay);
 
-            AddIdentifiers(doc, p, bytes);
+            // 4) Identifiers (optional)
+            if (p.Identifiers is { Count: > 0 })
+            {
+                docRef.Identifier = new List<Identifier>();
+                foreach (var id in p.Identifiers!)
+                {
+                    docRef.Identifier.Add(new Identifier(system: "urn:aria:doc", value: id));
+                }
+            }
 
-            AddExtensions(doc, p);
+            // 5) Add a SHA256 hash of the content as an identifier for traceability (optional but handy)
+            docRef.Identifier ??= new List<Identifier>();
+            docRef.Identifier.Add(new Identifier(system: "urn:hash:sha256", value: HashHelper.Sha256Hex(bytes)));
 
-            var created = await configurator
-                .ForResource<DocumentReference>(ct)
-                .CreateAsync(doc);
+            // 6) Varian extensions (all opt-in; nothing is emitted unless a flag is set)
+            AddExtensions(docRef, p);
+
+            // 7) Create via resource client
+            var docClient = configurator.ForResource<DocumentReference>(ct);
+            var created = await docClient.CreateAsync(docRef).ConfigureAwait(false);
 
             if (p.LogResourceJson && logger.IsEnabled(LogLevel.Debug) && created != null)
             {
@@ -319,45 +317,8 @@ namespace AriaAPI.API.DocumentReferenceCreate
                 }
             }
 
-            logger.LogInformation("Created DocumentReference {Id}", PhiMask.Mask(created?.Id ?? ""));
-
-            return created ?? throw new InvalidOperationException("Failed to create DocumentReference");
-        }
-
-        /// <summary>Adds author or fallback.</summary>
-        private static void AddAuthor(DocumentReference doc, DocumentReferenceCreateParams p)
-        {
-            if (!string.IsNullOrWhiteSpace(p.AuthorReference))
-            {
-                doc.Author = new List<ResourceReference>
-                {
-                    CreateRef(p.AuthorReference, p.AuthorDisplay)
-                };
-            }
-            else if (!string.IsNullOrWhiteSpace(p.AuthenticatorReference))
-            {
-                doc.Author = new List<ResourceReference>
-                {
-                    CreateRef(p.AuthenticatorReference, p.AuthenticatorDisplay)
-                };
-            }
-        }
-
-        /// <summary>Add identifiers + SHA256.</summary>
-        private static void AddIdentifiers(DocumentReference doc, DocumentReferenceCreateParams p, byte[] bytes)
-        {
-            doc.Identifier ??= new List<Identifier>();
-
-            if (p.Identifiers != null)
-            {
-                foreach (var id in p.Identifiers)
-                {
-                    if (!string.IsNullOrWhiteSpace(id))
-                        doc.Identifier.Add(new Identifier("urn:aria:doc", id));
-                }
-            }
-
-            doc.Identifier.Add(new Identifier("urn:hash:sha256", CreateHelpers.HashHelper.Sha256Hex(bytes)));
+            logger.LogInformation("DocumentReference created with id: {Id}", PhiMask.Mask(created?.Id ?? ""));
+            return created!;
         }
 
         /// <summary>Builds Varian extensions, then assigns them to the resource when any apply.</summary>
@@ -462,21 +423,28 @@ namespace AriaAPI.API.DocumentReferenceCreate
             }
         }
 
+        private static ResourceReference CreateRef(string reference, string? display = null)
+        {
+            var r = new ResourceReference(reference);
+            if (!string.IsNullOrWhiteSpace(display))
+                r.Display = display;
+            return r;
+        }
+
         /// <summary>
-        /// Serializes a DocumentReference to FHIR JSON for out-of-band verification.
-        /// </summary>
-        /// <remarks>
-        /// When <paramref name="includeAttachmentData"/> is <see langword="false"/> the base64
-        /// <c>Attachment.data</c> payload is redacted on a deep copy (the original is never
+        /// Serializes a DocumentReference to FHIR JSON for out-of-band verification against Aria
+        /// tooling. When <paramref name="includeAttachmentData"/> is <see langword="false"/> the
+        /// base64 <c>Attachment.data</c> payload is redacted on a deep copy (the original is never
         /// mutated) so the structure — including Varian extensions — can be inspected without
         /// dumping document bytes.
-        /// </remarks>
+        /// </summary>
         /// <param name="doc">The resource to serialize.</param>
         /// <param name="includeAttachmentData">Whether to retain the base64 attachment data.</param>
         /// <returns>Pretty-printed FHIR JSON.</returns>
         internal static string SerializeForVerification(DocumentReference doc, bool includeAttachmentData)
         {
-            ArgumentNullException.ThrowIfNull(doc);
+            if (doc is null)
+                throw new ArgumentNullException(nameof(doc));
 
             var target = doc;
 
@@ -502,114 +470,27 @@ namespace AriaAPI.API.DocumentReferenceCreate
             return JsonSerializer.Serialize(target, _verificationJsonOptions.Value);
         }
 
-        private static ResourceReference CreateRef(string reference, string? display = null)
+        private static DocumentReferenceStatus ParseDocRefStatus(string? s)
         {
-            var r = new ResourceReference(reference);
-            if (!string.IsNullOrWhiteSpace(display))
-                r.Display = display;
-            return r;
-        }
-
-        /// <summary>
-        /// Validates that an optional FHIR reference, when provided, is a well-formed FHIR reference.
-        /// Accepts the relative "ResourceType/Id" form (both segments non-empty), a contained
-        /// reference ("#id"), a urn ("urn:uuid:...", "urn:oid:..."), or an absolute URL. No-op when
-        /// the reference is null or whitespace (the reference is optional).
-        /// </summary>
-        internal static void EnsureValidReferenceFormat(string? reference, string referenceName)
-        {
-            if (string.IsNullOrWhiteSpace(reference))
-                return;
-
-            // Contained, urn, and absolute-URL references are all valid FHIR reference forms; only
-            // the relative "ResourceType/Id" form needs structural validation here.
-            if (reference.StartsWith("#", StringComparison.Ordinal) ||
-                reference.StartsWith("urn:", StringComparison.OrdinalIgnoreCase) ||
-                Uri.IsWellFormedUriString(reference, UriKind.Absolute))
-                return;
-
-            var parts = reference.Split('/');
-            if (parts.Length < 2 ||
-                string.IsNullOrWhiteSpace(parts[0]) ||
-                string.IsNullOrWhiteSpace(parts[1]))
-                throw new ArgumentException(
-                    $"{referenceName} must be a valid FHIR reference (e.g. 'ResourceType/Id', " +
-                    $"an absolute URL, or 'urn:uuid:...'), got: \"{reference}\".",
-                    "p");
-        }
-
-        internal static string ExtractId(string reference)
-        {
-            var parts = reference.Split('/');
-            if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1]))
-                throw new ArgumentException("Invalid FHIR reference");
-            return parts[1];
-        }
-
-        internal static DocumentReferenceStatus ParseStatus(string? s) =>
-            (s ?? "current").Trim().ToLowerInvariant() switch
+            return (s ?? "current").ToLowerInvariant() switch
             {
                 "current" => DocumentReferenceStatus.Current,
                 "entered-in-error" => DocumentReferenceStatus.EnteredInError,
                 "superseded" => DocumentReferenceStatus.Superseded,
-                _ => throw new ArgumentException(
-                    $"Invalid DocumentReference status '{s}'. Valid values: current, entered-in-error, superseded.",
-                    nameof(s))
+                _ => DocumentReferenceStatus.Current
             };
+        }
 
-        internal static CompositionStatus? ParseDocStatus(string? s) =>
-            (s ?? "final").Trim().ToLowerInvariant() switch
+        private static CompositionStatus? ParseDocStatus(string? s)
+        {
+            return (s ?? "final").ToLowerInvariant() switch
             {
                 "preliminary" => CompositionStatus.Preliminary,
                 "final" => CompositionStatus.Final,
                 "entered-in-error" => CompositionStatus.EnteredInError,
                 "amended" => CompositionStatus.Amended,
-                _ => throw new ArgumentException(
-                    $"Invalid DocumentReference docStatus '{s}'. Valid values: preliminary, final, entered-in-error, amended.",
-                    nameof(s))
+                _ => CompositionStatus.Final
             };
-
-
-        internal static string GetResolverOrganizationReference(DocumentReferenceCreateParams p)
-        {
-            // Coalesce on non-blank (not just non-null): an empty/whitespace
-            // DocumentTypeResolverOrganizationReference must still fall back to the next candidate.
-            var resolverRef =
-                FirstNonBlank(
-                    p.DocumentTypeResolverOrganizationReference,
-                    p.CustodianReference,
-                    p.InstitutionReference);
-
-            if (string.IsNullOrWhiteSpace(resolverRef))
-                throw new ArgumentException(
-                    "DocumentTypeResolverOrganizationReference, CustodianReference, or InstitutionReference is required for document type resolution.",
-                    nameof(p));
-
-            if (!resolverRef.StartsWith("Organization/", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException(
-                    $"Document type resolver must be an Organization reference, got: {resolverRef}",
-                    nameof(p));
-
-            // Must be the relative "Organization/Id" form so the publisher id can be extracted;
-            // reject malformed values (e.g. "Organization/", "Organization//5") with a clear message.
-            var parts = resolverRef.Split('/');
-            if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[1]))
-                throw new ArgumentException(
-                    $"Document type resolver must be in 'Organization/Id' form, got: {resolverRef}",
-                    nameof(p));
-
-            return resolverRef;
-        }
-
-        /// <summary>Returns the first argument that is not null, empty, or whitespace; otherwise null.</summary>
-        private static string? FirstNonBlank(params string?[] values)
-        {
-            foreach (var v in values)
-            {
-                if (!string.IsNullOrWhiteSpace(v))
-                    return v;
-            }
-            return null;
         }
     }
 }
