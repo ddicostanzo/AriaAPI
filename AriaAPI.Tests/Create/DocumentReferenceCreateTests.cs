@@ -173,6 +173,33 @@ namespace AriaAPI.Tests.Create
             Assert.Equal(expectedResolvedPath, ex.FileName);
         }
 
+        [Fact]
+        public async Task CreateFromFileAsync_MissingType_ThrowsArgumentException()
+        {
+            // Type is required; the guard must fire (fast) before the network resolver call,
+            // so an uninitialized configurator is never dereferenced.
+            var configurator = UninitializedConfigurator();
+            var tmpFile = Path.GetTempFileName();
+            try
+            {
+                await File.WriteAllBytesAsync(tmpFile, new byte[10]);
+
+                var p = new DocumentReferenceCreate.DocumentReferenceCreateParams
+                {
+                    SourceFilePath = tmpFile,
+                    AuthenticatorReference = "Organization/JamesRO"
+                    // Type intentionally omitted
+                };
+
+                await Assert.ThrowsAsync<ArgumentException>(() =>
+                    DocumentReferenceCreate.CreateFromFileAsync(configurator, p, _logger));
+            }
+            finally
+            {
+                File.Delete(tmpFile);
+            }
+        }
+
         // ── Varian extension flags (BuildVarianExtensions) ─────────────────────
 
         private const string SupervisorExtensionUrl =

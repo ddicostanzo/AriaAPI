@@ -226,6 +226,9 @@ namespace AriaAPI.API.DocumentReferenceCreate
                     $"AuthenticatorReference must be in 'ResourceType/Id' format (e.g., \"Organization/JamesRO\"), got: \"{p.AuthenticatorReference}\".",
                     nameof(p));
 
+            if (!p.Type.HasValue)
+                throw new ArgumentException("Document Type is required.", nameof(p));
+
             var service = await DocumentTypeConceptService.CreateAsync(
                     configurator,
                     publisher: refParts[1],
